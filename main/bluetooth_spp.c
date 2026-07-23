@@ -12,11 +12,22 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
-
 static const char *TAG = "BT_SPP";
 
 #define SPP_SERVER_NAME "MotorTest_SPP"
 #define BT_DEVICE_NAME "MotorTest_ESP32"
+#define PACKET_SOF 0xAAU
+
+typedef enum {
+    RX_WAIT_SOF,
+    RX_WAIT_COMMAND,
+    RX_WAIT_VALUE,
+    RX_WAIT_CRC
+} protocol_rx_state_t;
+
+static protocol_rx_state_t rx_state = RX_WAIT_SOF;
+static uint8_t rx_command;
+static uint8_t rx_value;
 
 static uint32_t spp_handle = 0;
 static bool client_connected = false;
@@ -38,6 +49,40 @@ static void bluetooth_spp_send(const char *text)
         ESP_LOGE(TAG, "SPP write failed: %s", esp_err_to_name(result));
     }
 }
+
+static void protocol_rx_byte(uint8_t byte)
+{
+    switch (rx_state)
+    {
+    case RX_WAIT_SOF:
+        if (byte == PACKET_SOF) {
+            rx_state = RX_WAIT_COMMAND;
+        }
+        break;
+
+    case RX_WAIT_COMMAND:
+        rx_command = byte;
+        rx_state = RX_WAIT_VALUE;
+        break;
+
+    case RX_WAIT_VALUE:
+        rx_value = byte;
+        rx_state = RX_WAIT_CRC;
+        break;
+
+    case RX_WAIT_CRC:
+        if (byte == (uint8_t)(PACKET_SOF ^ rx_command ^ rx_value)) {
+            command_handler_process(rx_command, rx_value);
+        }
+        rx_state = RX_WAIT_SOF;
+        break;
+
+    default:
+        rx_state = RX_WAIT_SOF;
+        break;
+    }
+}
+
 
 static void spp_callback(esp_spp_cb_event_t event,
                          esp_spp_cb_param_t *param)
@@ -72,7 +117,7 @@ static void spp_callback(esp_spp_cb_event_t event,
         bluetooth_spp_send("MotorTest_ESP32_is_connected\r\n");
 
         char proto_msg[32];
-        snprintf(proto_msg, sizeof(proto_msg), "PROTOCOL %d\r\n", esc_protocol_get());    
+        snprintf(proto_msg, sizeof(proto_msg), "PROTOCOL %d\r\n", esc_protocol_get());
         bluetooth_spp_send(proto_msg);
         break;
 
@@ -90,23 +135,10 @@ static void spp_callback(esp_spp_cb_event_t event,
 
     case ESP_SPP_DATA_IND_EVT:
     {
-        char command[128];
-        char response[64];
-
-        int length = param->data_ind.len;
-
-        if (length >= sizeof(command))
-            length = sizeof(command) - 1;
-
-        memcpy(command, param->data_ind.data, length);
-        command[length] = '\0';
-
-        command[strcspn(command, "\r\n")] = '\0';
-
-        ESP_LOGI(TAG, "Bluetooth command: %s", command);
-        command_handler_process(command, response, sizeof(response));
-        ESP_LOGI(TAG, "Bluetooth response: %s", response);
-        bluetooth_spp_send(response);
+        for (uint16_t i = 0; i < param->data_ind.len; ++i)
+        {
+            protocol_rx_byte(param->data_ind.data[i]);
+        }
         break;
     }
     default:
