@@ -1,0 +1,188 @@
+#include "bluetooth_spp.h"
+#include "command_handler.h"
+#include "esc_controller.h"
+#include "esc_protocol.h"
+
+#include <string.h>
+
+#include "esp_bt.h"
+#include "esp_bt_main.h"
+#include "esp_spp_api.h"
+#include "esp_gap_bt_api.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+
+
+static const char *TAG = "BT_SPP";
+
+#define SPP_SERVER_NAME "MotorTest_SPP"
+#define BT_DEVICE_NAME "MotorTest_ESP32"
+
+static uint32_t spp_handle = 0;
+static bool client_connected = false;
+
+static void bluetooth_spp_send(const char *text)
+{
+    if (!client_connected)
+    {
+        return;
+    }
+
+    esp_err_t result = esp_spp_write(
+        spp_handle,
+        strlen(text),
+        (uint8_t *)text);
+
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "SPP write failed: %s", esp_err_to_name(result));
+    }
+}
+
+static void spp_callback(esp_spp_cb_event_t event,
+                         esp_spp_cb_param_t *param)
+{
+    switch (event)
+    {
+    case ESP_SPP_INIT_EVT:
+        ESP_LOGI(TAG, "SPP initialized");
+
+        esp_bt_gap_set_device_name(BT_DEVICE_NAME);
+
+        esp_spp_start_srv(
+            ESP_SPP_SEC_NONE,
+            ESP_SPP_ROLE_SLAVE,
+            0,
+            SPP_SERVER_NAME);
+        break;
+
+    case ESP_SPP_START_EVT:
+        ESP_LOGI(TAG, "SPP server started");
+
+        esp_bt_gap_set_scan_mode(
+            ESP_BT_CONNECTABLE,
+            ESP_BT_GENERAL_DISCOVERABLE);
+        break;
+
+    case ESP_SPP_SRV_OPEN_EVT:
+        spp_handle = param->srv_open.handle;
+        client_connected = true;
+
+        ESP_LOGI(TAG, "Bluetooth client connected");
+        bluetooth_spp_send("MotorTest_ESP32_is_connected\r\n");
+
+        char proto_msg[32];
+        snprintf(proto_msg, sizeof(proto_msg), "PROTOCOL %d\r\n", esc_protocol_get());    
+        bluetooth_spp_send(proto_msg);
+        break;
+
+    case ESP_SPP_CLOSE_EVT:
+        ESP_LOGW(TAG, "Bluetooth client disconnected");
+
+        client_connected = false;
+        spp_handle = 0;
+
+        esc_controller_disarm();
+
+        ESP_LOGW(TAG,
+                 "Motor stopped and ESC disarmed because Bluetooth was disconnected");
+        break;
+
+    case ESP_SPP_DATA_IND_EVT:
+    {
+        char command[128];
+        char response[64];
+
+        int length = param->data_ind.len;
+
+        if (length >= sizeof(command))
+            length = sizeof(command) - 1;
+
+        memcpy(command, param->data_ind.data, length);
+        command[length] = '\0';
+
+        command[strcspn(command, "\r\n")] = '\0';
+
+        ESP_LOGI(TAG, "Bluetooth command: %s", command);
+        command_handler_process(command, response, sizeof(response));
+        ESP_LOGI(TAG, "Bluetooth response: %s", response);
+        bluetooth_spp_send(response);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+esp_err_t bluetooth_spp_init(void)
+{
+    esp_err_t result;
+    result = nvs_flash_init();
+
+    if (result == ESP_ERR_NVS_NO_FREE_PAGES ||
+        result == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        result = nvs_flash_init();
+    }
+
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(result));
+        return result;
+    }
+
+    esp_bt_controller_config_t bt_cfg =
+        BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+
+    result = esp_bt_controller_init(&bt_cfg);
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "BT controller init failed: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    result = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "BT controller enable failed: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    result = esp_bluedroid_init();
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Bluedroid init failed: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    result = esp_bluedroid_enable();
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Bluedroid enable failed: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    result = esp_spp_register_callback(spp_callback);
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "SPP callback registration failed: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    result = esp_spp_init(ESP_SPP_MODE_CB);
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "SPP init failed: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    ESP_LOGI(TAG, "Starting Bluetooth Classic SPP");
+    return ESP_OK;
+}
