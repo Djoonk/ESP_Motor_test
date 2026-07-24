@@ -2,11 +2,12 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include "esp_log.h"
 
 #include "command_handler.h"
 #include "esc_protocol.h"
 #include "esc_controller.h"
-
+static const char *TAG = "ESP_COMMAND";
 
 static void command_select_protocol(esc_protocol_t protocol)
 {
@@ -14,21 +15,23 @@ static void command_select_protocol(esc_protocol_t protocol)
     esc_protocol_select(protocol);
 }
 
-
 void command_handler_process(ESC_command_t command, uint8_t value)
 {
     switch (command)
     {
     case CMD_ARM:
         esc_controller_arm();
+        ESP_LOGW(TAG, "ESC is armed");
         break;
 
     case CMD_DISARM:
         esc_controller_disarm();
+        ESP_LOGW(TAG, "ESC is disarmed");
         break;
 
     case CMD_STOP:
         esc_controller_stop();
+        ESP_LOGW(TAG, "ESC is stoped");
         break;
 
     case CMD_THROTTLE:
