@@ -14,14 +14,21 @@ static const char *TAG = "ESC_DSHOT";
 
 static dshot_mode_t currentMode = DSHOT_MODE_300;
 static TaskHandle_t dshot_task_handle = NULL;
-static volatile bool streaming = false;
 static esp_timer_handle_t dshot_timer = NULL;
+static volatile bool streaming = false;
 static bool dshot_timer_started = false;
+static volatile uint16_t current_throttle = 0;
 
 static portMUX_TYPE throttle_mux = portMUX_INITIALIZER_UNLOCKED;
-static volatile uint16_t current_throttle = 0;
 static void dshot_timer_callback(void *arg);
 
+static volatile bool bidirectional_mode = false;
+static volatile uint8_t pole_count = 14;
+
+static portMUX_TYPE telemetry_mux = portMUX_INITIALIZER_UNLOCKED;
+static dshot_telemetry_t last_telemetry = {0};
+
+static rmt_symbol_word_t bidir_rx_buf[32];
 
 static void dshot_frame_task(void *arg)
 {
@@ -30,17 +37,54 @@ static void dshot_frame_task(void *arg)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         if (!streaming)
-        {
             continue;
-        }
 
         uint16_t throttle;
-
         portENTER_CRITICAL(&throttle_mux);
         throttle = current_throttle;
         portEXIT_CRITICAL(&throttle_mux);
 
-        dshot_rmt_send(esc_dshot_make_packet(throttle, false));
+        bool bidir;
+        portENTER_CRITICAL(&throttle_mux);
+        bidir = bidirectional_mode;
+        portEXIT_CRITICAL(&throttle_mux);
+
+        if (bidir)
+        {
+            uint16_t packet = esc_dshot_make_packet(throttle, true);
+            int rx_count = dshot_rmt_send_receive(
+                packet, bidir_rx_buf,
+                sizeof(bidir_rx_buf) / sizeof(rmt_symbol_word_t),
+                100);
+
+            dshot_telemetry_t tel = {0};
+
+            if (rx_count > 0)
+            {
+                uint16_t decoded;
+                if (dshot_rmt_decode_gcr(bidir_rx_buf,
+                                         rx_count, &decoded))
+                {
+                    tel.raw_value = decoded;
+                    tel.erpm = decoded & 0x7FFF;
+                    tel.rpm = tel.erpm * 2 / pole_count;
+                    tel.valid = true;
+                }
+            }
+
+            portENTER_CRITICAL(&telemetry_mux);
+            last_telemetry = tel;
+            portEXIT_CRITICAL(&telemetry_mux);
+
+            ESP_LOGI(TAG, "T:%u eRPM:%u RPM:%u V:%s",
+                     throttle, tel.erpm, tel.rpm,
+                     tel.valid ? "OK" : "FAIL");
+        }
+        else
+        {
+            dshot_rmt_send(
+                esc_dshot_make_packet(throttle, false));
+        }
     }
 }
 
@@ -54,6 +98,11 @@ esp_err_t esc_dshot_init(dshot_mode_t mode)
     esp_err_t err = dshot_rmt_init();
     if (err != ESP_OK)
         return err;
+
+    esp_err_t err_rx = dshot_rmt_init_rx();
+    if (err_rx != ESP_OK)
+        ESP_LOGW(TAG, "RX init failed: %s",
+                 esp_err_to_name(err_rx));
 
     if (dshot_task_handle == NULL)
     {
@@ -102,6 +151,7 @@ void esc_dshot_deinit(void)
         vTaskDelete(dshot_task_handle);
         dshot_task_handle = NULL;
     }
+    dshot_rmt_deinit_rx();
     dshot_rmt_deinit();
 }
 
@@ -206,4 +256,44 @@ uint16_t esc_dshot_make_packet(uint16_t throttle, bool telemetry)
 static void dshot_timer_callback(void *arg)
 {
     xTaskNotifyGive(dshot_task_handle);
+}
+
+void esc_dshot_set_bidirectional(bool enable)
+{
+    if (enable && !bidirectional_mode)
+    {
+        ESP_LOGI(TAG, "Bidirectional DShot enabled");
+    }
+    else if (!enable && bidirectional_mode)
+    {
+        ESP_LOGI(TAG, "Bidirectional DShot disabled");
+    }
+
+    portENTER_CRITICAL(&throttle_mux);
+    bidirectional_mode = enable;
+    portEXIT_CRITICAL(&throttle_mux);
+
+    portENTER_CRITICAL(&telemetry_mux);
+    last_telemetry = (dshot_telemetry_t){0};
+    portEXIT_CRITICAL(&telemetry_mux);
+}
+
+bool esc_dshot_is_bidirectional(void)
+{
+    return bidirectional_mode;
+}
+
+void esc_dshot_set_pole_count(uint8_t poles)
+{
+    if (poles > 0)
+        pole_count = poles;
+}
+
+dshot_telemetry_t esc_dshot_get_telemetry(void)
+{
+    dshot_telemetry_t tel;
+    portENTER_CRITICAL(&telemetry_mux);
+    tel = last_telemetry;
+    portEXIT_CRITICAL(&telemetry_mux);
+    return tel;
 }

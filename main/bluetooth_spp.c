@@ -137,13 +137,17 @@ static void spp_callback(esp_spp_cb_event_t event,
         client_connected = true;
 
         ESP_LOGI(TAG, "Bluetooth client connected");
-        bluetooth_spp_send((const uint8_t *)BtRespond, strlen(BtRespond));;
+        bluetooth_spp_send((const uint8_t *)BtRespond, strlen(BtRespond));
+        ;
 
-        uint8_t packet[4] = {0xAA, CMD_PROTOCOL, esc_protocol_get(), 0x00};
-        packet[4] = packet[0] ^ packet[1] ^ packet[2] ^ packet[3]; // CRC (XOR)
+        uint8_t packet[4];
+        packet[0] = 0xAA;
+        packet[1] = CMD_PROTOCOL;
+        packet[2] = esc_protocol_get();
+        packet[3] = packet[0] ^ packet[1] ^ packet[2];
 
         bluetooth_spp_send(packet, sizeof(packet));
-        
+
         break;
 
     case ESP_SPP_CLOSE_EVT:

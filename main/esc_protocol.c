@@ -16,7 +16,8 @@ static bool pwm_active = false;
 static bool is_dshot_protocol(esc_protocol_t protocol)
 {
     return protocol == ESC_PROTOCOL_DSHOT300 ||
-           protocol == ESC_PROTOCOL_DSHOT600;
+           protocol == ESC_PROTOCOL_DSHOT600 ||
+           protocol == ESC_PROTOCOL_BIDIRECTIONAL_DSHOT;
 }
 
 static void drive_signal_low(void)
@@ -63,7 +64,8 @@ void esc_protocol_select(esc_protocol_t protocol)
     {
         esc_dshot_stop_stream();
     }
-
+    if (protocol != ESC_PROTOCOL_BIDIRECTIONAL_DSHOT)
+        esc_dshot_set_bidirectional(false);
     currentProtocol = protocol;
 
     switch (protocol)
@@ -90,6 +92,7 @@ void esc_protocol_select(esc_protocol_t protocol)
 
     case ESC_PROTOCOL_BIDIRECTIONAL_DSHOT:
         ESP_LOGI(TAG, "Protocol = Bidirectional DShot");
+        esc_dshot_set_bidirectional(true);
         select_dshot(DSHOT_MODE_300);
         break;
 
