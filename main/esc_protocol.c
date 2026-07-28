@@ -7,8 +7,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static esc_protocol_t currentProtocol = ESC_PROTOCOL_PWM;
 static const char *TAG = "ESC_PROTOCOL";
+static esc_protocol_t currentProtocol = ESC_PROTOCOL_PWM;
 static bool pwm_active = false;
 
 #define DSHOT_PROTOCOL_SWITCH_LOW_MS 300U
@@ -41,10 +41,10 @@ static void select_dshot(dshot_mode_t mode)
 }
 
 void esc_protocol_init(void)
-{
+{ 
     esc_protocol_select(ESC_PROTOCOL_PWM);
-    // esc_protocol_select(ESC_PROTOCOL_DSHOT300); //test
 }
+   
 
 void esc_protocol_select(esc_protocol_t protocol)
 {
@@ -61,11 +61,11 @@ void esc_protocol_select(esc_protocol_t protocol)
         vTaskDelay(pdMS_TO_TICKS(DSHOT_PROTOCOL_SWITCH_LOW_MS));
     }
     else if (previous_protocol != ESC_PROTOCOL_PWM)
-    {
         esc_dshot_stop_stream();
-    }
+
     if (protocol != ESC_PROTOCOL_BIDIRECTIONAL_DSHOT)
         esc_dshot_set_bidirectional(false);
+
     currentProtocol = protocol;
 
     switch (protocol)
@@ -73,6 +73,7 @@ void esc_protocol_select(esc_protocol_t protocol)
     case ESC_PROTOCOL_PWM:
         ESP_LOGI(TAG, "Protocol = PWM");
         esc_dshot_deinit();
+
         if (!pwm_active)
         {
             esc_pwm_init();
@@ -92,8 +93,8 @@ void esc_protocol_select(esc_protocol_t protocol)
 
     case ESC_PROTOCOL_BIDIRECTIONAL_DSHOT:
         ESP_LOGI(TAG, "Protocol = Bidirectional DShot");
-        esc_dshot_set_bidirectional(true);
         select_dshot(DSHOT_MODE_300);
+        esc_dshot_set_bidirectional(true);
         break;
 
     default:
@@ -129,7 +130,5 @@ void esc_protocol_stop(void)
         return;
     }
 
-    // Раніше тут нічого не було для DSHOT300/600 - мотор
-    // не зупинявся ні по stop, ні по estop, ні по disarm.
     esc_dshot_stop();
 }

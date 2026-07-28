@@ -13,6 +13,9 @@ typedef enum
 typedef struct {
     uint16_t erpm;
     uint16_t rpm;
+    uint8_t temperature;
+    float voltage;
+    float current;
     uint16_t raw_value;
     bool valid;
 } dshot_telemetry_t;
@@ -31,3 +34,4 @@ void esc_dshot_set_bidirectional(bool enable);
 bool esc_dshot_is_bidirectional(void);
 void esc_dshot_set_pole_count(uint8_t poles);
 dshot_telemetry_t esc_dshot_get_telemetry(void);
+void esc_dshot_enable_edt(void);

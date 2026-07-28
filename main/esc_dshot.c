@@ -9,8 +9,9 @@ static const char *TAG = "ESC_DSHOT";
 
 #define DSHOT_FRAME_PERIOD_US 500U
 #define DSHOT_FRAME_RATE_HZ 2000U
-#define DSHOT_TASK_STACK_SIZE 2048
+#define DSHOT_TASK_STACK_SIZE 4096
 #define DSHOT_TASK_PRIORITY 2
+#define DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE 13
 
 static dshot_mode_t currentMode = DSHOT_MODE_300;
 static TaskHandle_t dshot_task_handle = NULL;
@@ -24,11 +25,14 @@ static void dshot_timer_callback(void *arg);
 
 static volatile bool bidirectional_mode = false;
 static volatile uint8_t pole_count = 14;
+static volatile bool edt_enable_pending = false;
 
 static portMUX_TYPE telemetry_mux = portMUX_INITIALIZER_UNLOCKED;
 static dshot_telemetry_t last_telemetry = {0};
 
-static rmt_symbol_word_t bidir_rx_buf[32];
+static rmt_symbol_word_t bidir_rx_buf[128];
+
+static void parse_edt_frame(uint16_t decoded, dshot_telemetry_t *tel);
 
 static void dshot_frame_task(void *arg)
 {
@@ -38,6 +42,21 @@ static void dshot_frame_task(void *arg)
 
         if (!streaming)
             continue;
+
+        if (edt_enable_pending)
+        {
+            edt_enable_pending = false;
+            ESP_LOGI(TAG, "EDT: sending cmd 13 x6...");
+            for (int i = 0; i < 6; i++)
+            {
+                dshot_rmt_send(
+                    esc_dshot_make_packet(
+                        DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE, false));
+                vTaskDelay(pdMS_TO_TICKS(3));
+            }
+            ESP_LOGI(TAG, "EDT enabled");
+            continue;
+        }
 
         uint16_t throttle;
         portENTER_CRITICAL(&throttle_mux);
@@ -55,20 +74,35 @@ static void dshot_frame_task(void *arg)
             int rx_count = dshot_rmt_send_receive(
                 packet, bidir_rx_buf,
                 sizeof(bidir_rx_buf) / sizeof(rmt_symbol_word_t),
-                100);
+                500);
 
             dshot_telemetry_t tel = {0};
 
-            if (rx_count > 0)
+            if (rx_count <= 0)
+            {
+                ESP_LOGW(TAG, "bidir rx_count=%d (no response)", rx_count);
+            }
+            else
             {
                 uint16_t decoded;
                 if (dshot_rmt_decode_gcr(bidir_rx_buf,
                                          rx_count, &decoded))
                 {
                     tel.raw_value = decoded;
-                    tel.erpm = decoded & 0x7FFF;
-                    tel.rpm = tel.erpm * 2 / pole_count;
                     tel.valid = true;
+                    parse_edt_frame(decoded, &tel);
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "bidir GCR decode fail, rx_count=%d "
+                             "sym0=[%d,%d] sym1=[%d,%d] sym2=[%d,%d]",
+                             rx_count,
+                             bidir_rx_buf[0].duration0,
+                             bidir_rx_buf[0].duration1,
+                             bidir_rx_buf[1].duration0,
+                             bidir_rx_buf[1].duration1,
+                             bidir_rx_buf[2].duration0,
+                             bidir_rx_buf[2].duration1);
                 }
             }
 
@@ -76,8 +110,9 @@ static void dshot_frame_task(void *arg)
             last_telemetry = tel;
             portEXIT_CRITICAL(&telemetry_mux);
 
-            ESP_LOGI(TAG, "T:%u eRPM:%u RPM:%u V:%s",
+            ESP_LOGI(TAG, "T:%u eRPM:%u RPM:%u V:%.1f I:%.1f T:%u°C %s",
                      throttle, tel.erpm, tel.rpm,
+                     tel.voltage, tel.current, tel.temperature,
                      tel.valid ? "OK" : "FAIL");
         }
         else
@@ -235,7 +270,13 @@ static uint8_t dshot_crc(uint16_t value)
     crc ^= value >> 4;
     crc ^= value >> 8;
 
-    return crc & 0x0F;
+    crc = crc & 0x0F;
+
+    // Bidirectional DShot uses inverted CRC
+    if (bidirectional_mode)
+        crc = (~crc) & 0x0F;
+
+    return crc;
 }
 
 uint16_t esc_dshot_make_packet(uint16_t throttle, bool telemetry)
@@ -258,10 +299,56 @@ static void dshot_timer_callback(void *arg)
     xTaskNotifyGive(dshot_task_handle);
 }
 
+void esc_dshot_enable_edt(void)
+{
+    ESP_LOGI(TAG, "EDT enable pending");
+    edt_enable_pending = true;
+}
+
+static void parse_edt_frame(uint16_t decoded, dshot_telemetry_t *tel)
+{
+    uint8_t type = (decoded >> 13) & 0x07;
+    uint8_t value = (decoded >> 4) & 0xFF;
+
+    switch (type)
+    {
+    case 0x00: // eRPM low range
+        tel->erpm = value;
+        tel->rpm = tel->erpm * 2 / pole_count;
+        break;
+    case 0x01: // Temperature (°C)
+        tel->temperature = value;
+        break;
+    case 0x02: // Voltage (0.25V per step)
+        tel->voltage = value * 0.25f;
+        break;
+    case 0x03: // Current (1A per step)
+        tel->current = (float)value;
+        break;
+    case 0x04: // eRPM [512..1022]
+        tel->erpm = 512 + (value * 2);
+        tel->rpm = tel->erpm * 2 / pole_count;
+        break;
+    case 0x05: // eRPM [1024..2044]
+        tel->erpm = 1024 + (value * 4);
+        tel->rpm = tel->erpm * 2 / pole_count;
+        break;
+    case 0x06: // eRPM [2048..4088]
+        tel->erpm = 2048 + (value * 8);
+        tel->rpm = tel->erpm * 2 / pole_count;
+        break;
+    case 0x07: // eRPM [4096..8176]
+        tel->erpm = 4096 + (value * 16);
+        tel->rpm = tel->erpm * 2 / pole_count;
+        break;
+    }
+}
+
 void esc_dshot_set_bidirectional(bool enable)
 {
     if (enable && !bidirectional_mode)
     {
+        esc_dshot_enable_edt();
         ESP_LOGI(TAG, "Bidirectional DShot enabled");
     }
     else if (!enable && bidirectional_mode)

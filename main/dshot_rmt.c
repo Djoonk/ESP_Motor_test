@@ -6,6 +6,8 @@
 #include "esc_pwm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "rom/ets_sys.h"
+#include "esp_timer.h"
 
 static const char *TAG = "DSHOT_RMT";
 
@@ -26,20 +28,22 @@ static bool rx_done_callback(rmt_channel_handle_t channel,
     return wake == pdTRUE;
 }
 
-#define DSHOT_RMT_TX_TIMEOUT_MS 10
+// ── DShot timing at 8 MHz (1 tick = 125 ns) ──
+// DShot300: bit = 3.33 us = 26.67 ticks
+// DShot600: bit = 1.67 us = 13.33 ticks
+#define RMT_RESOLUTION_HZ  8000000U
 
-// RMT = 10 MHz, 1 tick = 100 ns
-#define DSHOT300_T0H_TICKS 12
-#define DSHOT300_T0L_TICKS 21
-#define DSHOT300_T1H_TICKS 25
-#define DSHOT300_T1L_TICKS 8
+// DShot300 at 8 MHz
+#define DSHOT300_T1H_TICKS 20   // 2.50 us
+#define DSHOT300_T1L_TICKS 6    // 0.75 us (bit=3.25 us)
+#define DSHOT300_T0H_TICKS 10   // 1.25 us
+#define DSHOT300_T0L_TICKS 16   // 2.00 us
 
-// RMT = 10 MHz, 1 tick = 100 ns
-// DShot600: bit = 1.67 us = 17 ticks
-#define DSHOT600_T0H_TICKS 13  // 0.65 us
-#define DSHOT600_T0L_TICKS 20  // 1.00 us
-#define DSHOT600_T1H_TICKS 25  // 1.25 us
-#define DSHOT600_T1L_TICKS 8   // 0.40 us
+// DShot600 at 8 MHz
+#define DSHOT600_T1H_TICKS 10   // 1.25 us
+#define DSHOT600_T1L_TICKS 3    // 0.375 us
+#define DSHOT600_T0H_TICKS 5    // 0.625 us
+#define DSHOT600_T0L_TICKS 8    // 1.00 us
 
 void dshot_rmt_set_bitrate(uint32_t bitrate_khz)
 {
@@ -58,11 +62,13 @@ esp_err_t dshot_rmt_init(void)
         {
             .gpio_num = ESC_PWM_GPIO,
             .clk_src = RMT_CLK_SRC_DEFAULT,
-            .resolution_hz = (dshot_bitrate_khz == 600U)
-                     ? 20000000U
-                     : 10000000U,
+            .resolution_hz = RMT_RESOLUTION_HZ,
             .mem_block_symbols = 64,
-            .trans_queue_depth = 4,
+            .trans_queue_depth = 1,
+            .flags = {
+                .invert_out = 1,
+                .init_level = 0,
+            },
         };
 
     esp_err_t ret = rmt_new_tx_channel(&config, &tx_channel);
@@ -104,10 +110,18 @@ esp_err_t dshot_rmt_deinit(void)
     return ESP_OK;
 }
 
+static volatile bool rx_enabled = false;
+
 esp_err_t dshot_rmt_send(uint16_t packet)
 {
     if (tx_channel == NULL || copy_encoder == NULL)
         return ESP_ERR_INVALID_STATE;
+
+    if (rx_channel != NULL && rx_enabled)
+    {
+        rmt_disable(rx_channel);
+        rx_enabled = false;
+    }
 
     rmt_symbol_word_t symbols[16];
     dshot_rmt_encode_packet(packet, symbols);
@@ -124,10 +138,7 @@ esp_err_t dshot_rmt_send(uint16_t packet)
         return err;
     }
 
-    // return rmt_tx_wait_all_done(tx_channel, DSHOT_RMT_TX_TIMEOUT_MS);
-
-    err = rmt_tx_wait_all_done(tx_channel,
-                               DSHOT_RMT_TX_TIMEOUT_MS);
+    err = rmt_tx_wait_all_done(tx_channel, 10);
 
     if (err != ESP_OK)
     {
@@ -187,10 +198,8 @@ esp_err_t dshot_rmt_init_rx(void)
     rmt_rx_channel_config_t config = {
         .gpio_num = ESC_PWM_GPIO,
         .clk_src = RMT_CLK_SRC_DEFAULT,
-        .resolution_hz = (dshot_bitrate_khz == 600U)
-                             ? 20000000U
-                             : 10000000U,
-        .mem_block_symbols = 64,
+        .resolution_hz = RMT_RESOLUTION_HZ,
+        .mem_block_symbols = 128,
     };
 
     esp_err_t ret = rmt_new_rx_channel(&config, &rx_channel);
@@ -204,6 +213,7 @@ esp_err_t dshot_rmt_init_rx(void)
     rmt_rx_event_callbacks_t cbs = {
         .on_recv_done = rx_done_callback,
     };
+
     rmt_rx_register_event_callbacks(rx_channel, &cbs, NULL);
 
     ESP_LOGI(TAG, "RMT RX init: rx_channel=%p", rx_channel);
@@ -226,9 +236,27 @@ int dshot_rmt_send_receive(uint16_t packet,
                            size_t rx_buf_size,
                            uint32_t timeout_us)
 {
-    // ── TX phase (існуючий код) ──
     if (tx_channel == NULL || copy_encoder == NULL)
         return -1;
+
+    if (rx_enabled)
+    {
+        rmt_disable(rx_channel);
+        rx_enabled = false;
+    }
+
+    rmt_receive_config_t rx_cfg = {
+        .signal_range_min_ns = 500,
+        .signal_range_max_ns = 50000,
+    };
+
+    size_t rx_size = rx_buf_size * sizeof(rmt_symbol_word_t);
+    esp_err_t err = rmt_receive(rx_channel, rx_buf, rx_size, &rx_cfg);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "rmt_receive: %s", esp_err_to_name(err));
+        return -1;
+    }
 
     rmt_symbol_word_t tx_symbols[16];
     dshot_rmt_encode_packet(packet, tx_symbols);
@@ -237,46 +265,18 @@ int dshot_rmt_send_receive(uint16_t packet,
         .loop_count = 0,
     };
 
-    esp_err_t err = rmt_transmit(tx_channel, copy_encoder,
-                                  tx_symbols, sizeof(tx_symbols),
-                                  &tx_cfg);
+    err = rmt_transmit(tx_channel, copy_encoder,
+                       tx_symbols, sizeof(tx_symbols), &tx_cfg);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "rmt_transmit: %s", esp_err_to_name(err));
         return -1;
     }
 
-    err = rmt_tx_wait_all_done(tx_channel,
-                                DSHOT_RMT_TX_TIMEOUT_MS);
+    err = rmt_tx_wait_all_done(tx_channel, 10);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "TX done: %s", esp_err_to_name(err));
-        return -1;
-    }
-
-    // ── TX→RX switch ──
-    rmt_disable(tx_channel);
-    gpio_set_direction(ESC_PWM_GPIO, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(ESC_PWM_GPIO, GPIO_PULLUP_ONLY);
-
-    // ── RX phase ──
-    rmt_enable(rx_channel);
-
-    rmt_receive_config_t rx_cfg = {
-        .signal_range_min_ns = 500,
-        .signal_range_max_ns = 100000,
-    };
-
-    size_t rx_size = rx_buf_size * sizeof(rmt_symbol_word_t);
-    err = rmt_receive(rx_channel, rx_buf, rx_size, &rx_cfg);
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "rmt_receive: %s", esp_err_to_name(err));
-        rmt_disable(rx_channel);
-        gpio_set_direction(ESC_PWM_GPIO, GPIO_MODE_OUTPUT);
-        gpio_set_level(ESC_PWM_GPIO, 0);
-        rmt_enable(tx_channel);
         return -1;
     }
 
@@ -287,13 +287,10 @@ int dshot_rmt_send_receive(uint16_t packet,
     {
         num_rx = (int)rx_num_symbols;
     }
-
-    rmt_disable(rx_channel);
-
-    // ── RX→TX switch ──
-    gpio_set_direction(ESC_PWM_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_level(ESC_PWM_GPIO, 0);
-    rmt_enable(tx_channel);
+    else
+    {
+        ESP_LOGW(TAG, "RX timeout (%u us)", timeout_us);
+    }
 
     return num_rx;
 }
@@ -305,39 +302,53 @@ bool dshot_rmt_decode_gcr(const rmt_symbol_word_t *symbols,
     if (count < 21)
         return false;
 
-    // Symbol 0 = idle LOW + start bit HIGH (корумпований)
-    // Symbols 1-20 = кожен містить LOW попереднього біта + HIGH наступного
-    // Біт = (duration1 > duration0) → HIGH тривалість > LOW тривалість
-    uint32_t encoded = 0;
+    int start = 0;
+    if (count >= 37)
+        start = count - 21;
 
-    for (int i = 1; i <= 20 && i < count; i++)
+    // Extract 21 raw GCR bits from RMT symbols
+    uint32_t gcr_raw = 0;
+    for (int i = start; i < start + 21; i++)
     {
-        bool bit = symbols[i].duration1 > symbols[i].duration0;
-
-        if (bit)
-            encoded |= (1U << (20 - i));
+        bool bit_is_one = symbols[i].duration0 > symbols[i].duration1;
+        gcr_raw = (gcr_raw << 1) | bit_is_one;
     }
 
-    // GCR decode: running XOR
-    uint32_t decoded = encoded;
-    decoded ^= decoded >> 1;
-    decoded ^= decoded >> 2;
-    decoded ^= decoded >> 4;
-    decoded ^= decoded >> 8;
-    decoded ^= decoded >> 16;
-    decoded &= 0xFFFFF;
+    // Step 2: GCR decode: decoded = encoded ^ (encoded >> 1)
+    uint32_t decoded = gcr_raw ^ (gcr_raw >> 1);
 
-    // Перевірка CRC: XOR усіх 5 nibble → має бути 0
-    uint8_t crc = 0;
-    crc ^= (decoded >> 16) & 0x0F;
-    crc ^= (decoded >> 12) & 0x0F;
-    crc ^= (decoded >> 8) & 0x0F;
-    crc ^= (decoded >> 4) & 0x0F;
-    crc ^= decoded & 0x0F;
+    // Step 3: Extract 16-bit data (4 nibbles of 4 bits)
+    // The decoded value is 20 bits: [nibble3][nibble2][nibble1][nibble0][crc]
+    // We need the upper 16 bits (4 data nibbles)
+    uint16_t data = (decoded >> 4) & 0xFFFF;
 
-    if (crc != 0)
-        return false;
+    // Step 4: Verify CRC — XOR of all 4 nibbles + CRC nibble must be 0
+    uint8_t crc_check = 0;
+    crc_check ^= (data >> 12) & 0x0F;
+    crc_check ^= (data >> 8) & 0x0F;
+    crc_check ^= (data >> 4) & 0x0F;
+    crc_check ^= data & 0x0F;
 
-    *decoded_out = (uint16_t)(decoded >> 4);
+    if (crc_check != 0x00)
+    {
+        // Try inverted CRC (bidirectional DShot uses inverted CRC)
+        crc_check = 0;
+        uint16_t inverted_data = data;
+        uint8_t inverted_crc = (~((decoded >> 4) & 0x0F)) & 0x0F;
+        inverted_data = (inverted_data & 0xFFF0) | inverted_crc;
+
+        crc_check = 0;
+        crc_check ^= (inverted_data >> 12) & 0x0F;
+        crc_check ^= (inverted_data >> 8) & 0x0F;
+        crc_check ^= (inverted_data >> 4) & 0x0F;
+        crc_check ^= inverted_data & 0x0F;
+
+        if (crc_check != 0x00)
+            return false;
+
+        data = inverted_data;
+    }
+
+    *decoded_out = data;
     return true;
 }
