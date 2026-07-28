@@ -140,7 +140,7 @@ static void spp_callback(esp_spp_cb_event_t event,
         bluetooth_spp_send((const uint8_t *)BtRespond, strlen(BtRespond));;
 
         uint8_t packet[4] = {0xAA, CMD_PROTOCOL, esc_protocol_get(), 0x00};
-        packet[4] = packet[0] ^ packet[1] ^ packet[2] ^ packet[3]; // CRC (XOR)
+        packet[3] = packet[0] ^ packet[1] ^ packet[2]; // CRC (XOR)
 
         bluetooth_spp_send(packet, sizeof(packet));
         
