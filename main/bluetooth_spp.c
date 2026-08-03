@@ -78,7 +78,7 @@ static void bt_command_task(void *arg)
 
 static void protocol_rx_byte(uint8_t byte)
 {
-    ESP_LOGW(TAG, "Parssing is OK");
+    // ESP_LOGW(TAG, "Parssing is OK");
     switch (rx_state)
     {
     case RX_WAIT_SOF:

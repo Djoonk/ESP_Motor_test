@@ -8,6 +8,7 @@ idf_component_register(
 	"esc_protocol.c"
 	"esc_dshot.c" 
 	"dshot_rmt.c"
+	"dshot_rmt_encoder.c"
     INCLUDE_DIRS "."
     REQUIRES 
         bt 

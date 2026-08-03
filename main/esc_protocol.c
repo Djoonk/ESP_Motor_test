@@ -26,7 +26,7 @@ static void drive_signal_low(void)
     ESP_ERROR_CHECK(gpio_set_level(ESC_PWM_GPIO, 0));
 }
 
-static void select_dshot(dshot_mode_t mode)
+static void select_dshot(dshot_mode_t mode, bool bidir)
 {
     if (pwm_active)
     {
@@ -34,7 +34,7 @@ static void select_dshot(dshot_mode_t mode)
         pwm_active = false;
     }
 
-    ESP_ERROR_CHECK(esc_dshot_init(mode));
+    ESP_ERROR_CHECK(esc_dshot_init(mode, bidir));
     esc_dshot_set_mode(mode);
     esc_dshot_start_stream();
 }
@@ -80,17 +80,17 @@ void esc_protocol_select(esc_protocol_t protocol)
 
     case ESC_PROTOCOL_DSHOT300:
         ESP_LOGI(TAG, "Protocol = DShot300");
-        select_dshot(DSHOT_MODE_300);
+        select_dshot(DSHOT_MODE_300, false);
         break;
 
     case ESC_PROTOCOL_DSHOT600:
         ESP_LOGI(TAG, "Protocol = DShot600");
-        select_dshot(DSHOT_MODE_600);
+        select_dshot(DSHOT_MODE_600, false);
         break;
 
     case ESC_PROTOCOL_BIDIRECTIONAL_DSHOT:
         ESP_LOGI(TAG, "Protocol = Bidirectional DShot");
-        select_dshot(DSHOT_MODE_300);
+        select_dshot(DSHOT_MODE_300, true);
         break;
 
     default:
