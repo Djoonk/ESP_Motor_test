@@ -17,12 +17,13 @@ static const char *TAG = "ESC_DSHOT";
 #define DSHOT_ARM_FRAMES        ((uint32_t)(DSHOT_ARM_DELAY_MS * DSHOT_FRAME_RATE_HZ / 1000))
 
 #define DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE 13
-#define EDT_ENABLE_REPEATS    10
-#define EDT_ENABLE_DELAY_MS   3
+#define EDT_ENABLE_REPEATS    8
+// AM32 dshot.c: a command executes only after 6 CONSECUTIVE identical command
+// frames; ANY other frame (throttle 0 included) resets its command_count.
+// So cmd 13 must be sent back-to-back with no throttle frames in between.
 
 static dshot_mode_t currentMode = DSHOT_MODE_300;
 static bool bidir_active = false;
-static bool edt_pending = false;
 static TaskHandle_t dshot_task_handle = NULL;
 static volatile bool streaming = false;
 static esp_timer_handle_t dshot_timer = NULL;
@@ -31,16 +32,38 @@ static bool dshot_timer_started = false;
 static portMUX_TYPE throttle_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint16_t current_throttle = 0;
 static volatile uint32_t arming_frames_remaining = 0;
+
+// Last known EDT values (updated as the ESC cycles through frame types)
+static volatile uint32_t telem_erpm = INVALID_TELEMETRY_VALUE; // eRPM/100
+static volatile uint32_t telem_voltage = INVALID_TELEMETRY_VALUE; // 0.01 V
+static volatile uint32_t telem_current = INVALID_TELEMETRY_VALUE; // 0.01 A
+static volatile uint32_t telem_temperature = INVALID_TELEMETRY_VALUE; // degC
+static bool edt_ack_logged = false;
+
+// Raw (unscaled) values — phone applies the scale factors
+static volatile uint16_t telem_raw_erpm = 0;
+static volatile uint8_t  telem_raw_temp = 0;
+static volatile uint8_t  telem_raw_voltage = 0;
+static volatile uint8_t  telem_raw_current = 0;
+
+// EDT enable state: cmd 13 (with telemetry bit set) is interleaved into the
+// normal 500 Hz stream AFTER arming, while the motor is stopped (throttle 0).
+// The frame stream stays continuous so the ESC never sees a signal stall.
+// See BLHeli_32 Digital_Cmd_Spec.txt: 6x, >= 35 ms apart, motors stopped,
+// telemetry bit set in the command frames.
+static bool edt_pending = false;
+static int edt_cmds_sent = 0;
+
 static void dshot_timer_callback(void *arg);
 
 void esc_dshot_enable_edt(void)
 {
     edt_pending = true;
+    edt_cmds_sent = 0;
 }
 
 static void dshot_frame_task(void *arg)
 {
-    uint32_t erpm;
     uint16_t frame_count = 0;
 
     while (true)
@@ -49,27 +72,19 @@ static void dshot_frame_task(void *arg)
         if (!streaming)
             continue;
 
-        // ── EDT enable (once) ──
-        if (edt_pending)
-        {
-            edt_pending = false;
-            ESP_LOGI(TAG, "EDT: sending cmd 13 x%d...", EDT_ENABLE_REPEATS);
-            for (int i = 0; i < EDT_ENABLE_REPEATS; i++)
-            {
-                dshot_rmt_send(DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE, false);
-                vTaskDelay(pdMS_TO_TICKS(EDT_ENABLE_DELAY_MS));
-            }
-            ESP_LOGI(TAG, "EDT enabled");
-            continue;
-        }
-
         // ── Read throttle (force 0 while the ESC is arming) ──
         uint16_t throttle;
+        bool armed_now = false;
         portENTER_CRITICAL(&throttle_mux);
         if (arming_frames_remaining > 0)
         {
             arming_frames_remaining--;
             throttle = 0;
+            if (arming_frames_remaining == 0)
+            {
+                edt_pending = true;
+                armed_now = true;
+            }
         }
         else
         {
@@ -77,21 +92,90 @@ static void dshot_frame_task(void *arg)
         }
         portEXIT_CRITICAL(&throttle_mux);
 
+        if (armed_now)
+        {
+            ESP_LOGI(TAG, "ESC armed, enabling EDT");
+        }
+
         // ── Bidirectional frame (MichelJansson flow: send + busy-wait reply) ──
         if (bidir_active)
         {
-            dshot_rmt_send(throttle, true);
-
-            if (dshot_rmt_wait_erpm(&erpm) == ESP_OK)
+            // EDT enable: send cmd 13 (with telemetry bit set) back-to-back,
+            // NO throttle frames between them - AM32 requires 6 consecutive
+            // identical command frames and resets its counter on any other
+            // frame. One frame per timer tick (500 Hz) is consecutive here.
+            // Throttle stays 0 until the burst completes, so the motor cannot
+            // spool up.
+            bool send_cmd = false;
+            if (edt_pending)
             {
-                if (frame_count % 100 == 0)
+                send_cmd = true;
+                if (++edt_cmds_sent >= EDT_ENABLE_REPEATS)
                 {
-                    ESP_LOGI(TAG, "T:%u eRPM(1LSB=100):%lu", throttle, erpm);
+                    edt_pending = false;
+                    ESP_LOGI(TAG, "EDT enable done (cmd 13 x%d)", EDT_ENABLE_REPEATS);
                 }
             }
-            else if (frame_count % 500 == 0)
+
+            uint16_t to_send = send_cmd ? DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE : throttle;
+            bool sent = dshot_rmt_send(to_send, true);
+
+            dshot_telemetry_t telem;
+            if (sent && dshot_rmt_wait_telemetry(&telem) == ESP_OK)
             {
-                ESP_LOGW(TAG, "No eRPM (T:%u, frames:%u)", throttle, frame_count);
+                // Refresh last known EDT value for this frame type
+                bool edt_ack = false;
+                uint32_t edt_ack_val = 0;
+                portENTER_CRITICAL(&throttle_mux);
+                switch (telem.type)
+                {
+                case DSHOT_TELEMETRY_TYPE_eRPM:
+                    telem_erpm = telem.value;
+                    telem_raw_erpm = telem.raw;
+                    break;
+                case DSHOT_TELEMETRY_TYPE_TEMPERATURE:
+                    telem_temperature = telem.value;
+                    telem_raw_temp = (uint8_t)telem.raw;
+                    break;
+                case DSHOT_TELEMETRY_TYPE_VOLTAGE:
+                    telem_voltage = telem.value;
+                    telem_raw_voltage = (uint8_t)telem.raw;
+                    break;
+                case DSHOT_TELEMETRY_TYPE_CURRENT:
+                    telem_current = telem.value;
+                    telem_raw_current = (uint8_t)telem.raw;
+                    break;
+                case DSHOT_TELEMETRY_TYPE_STATE_EVENTS:
+                    edt_ack = true;
+                    edt_ack_val = telem.value;
+                    break;
+                default:
+                    break;
+                }
+                portEXIT_CRITICAL(&throttle_mux);
+
+                if (edt_ack && !edt_ack_logged)
+                {
+                    edt_ack_logged = true;
+                    ESP_LOGI(TAG, "EDT ack/status frame: 0x%02lx", edt_ack_val);
+                }
+
+                if (frame_count % 100 == 0)
+                {
+                    uint32_t erpm = telem_erpm;
+                    uint32_t volt = telem_voltage;
+                    uint32_t curr = telem_current;
+                    uint32_t temp = telem_temperature;
+                    ESP_LOGI(TAG, "T:%u eRPM(LSB=100):%lu  V:%lu.%02lu  A:%lu.%02lu  T:%luC",
+                             throttle, erpm,
+                             volt / 100, volt % 100,
+                             curr / 100, curr % 100,
+                             temp);
+                }
+            }
+            else if (arming_frames_remaining == 0 && frame_count % 500 == 0)
+            {
+                ESP_LOGW(TAG, "No telemetry (T:%u, frames:%u)", throttle, frame_count);
             }
 
             frame_count++;
@@ -170,6 +254,10 @@ void esc_dshot_start_stream(void)
     arming_frames_remaining = DSHOT_ARM_FRAMES;
     portEXIT_CRITICAL(&throttle_mux);
 
+    edt_ack_logged = false;
+    edt_pending = false;
+    edt_cmds_sent = 0;
+
     dshot_rmt_reset_telemetry();
     streaming = true;
 
@@ -195,6 +283,10 @@ void esc_dshot_stop_stream(void)
 
     portENTER_CRITICAL(&throttle_mux);
     current_throttle = 0;
+    telem_erpm = INVALID_TELEMETRY_VALUE;
+    telem_voltage = INVALID_TELEMETRY_VALUE;
+    telem_current = INVALID_TELEMETRY_VALUE;
+    telem_temperature = INVALID_TELEMETRY_VALUE;
     portEXIT_CRITICAL(&throttle_mux);
 
     ESP_LOGI(TAG, "Stream stopped");
@@ -229,6 +321,16 @@ void esc_dshot_send_command(uint16_t command, bool telemetry)
 bool esc_dshot_is_bidirectional(void)
 {
     return bidir_active;
+}
+
+void esc_dshot_get_raw_telemetry(esc_dshot_raw_telemetry_t *out)
+{
+    portENTER_CRITICAL(&throttle_mux);
+    out->erpm        = telem_raw_erpm;
+    out->temperature = telem_raw_temp;
+    out->voltage     = telem_raw_voltage;
+    out->current     = telem_raw_current;
+    portEXIT_CRITICAL(&throttle_mux);
 }
 
 static void dshot_timer_callback(void *arg)

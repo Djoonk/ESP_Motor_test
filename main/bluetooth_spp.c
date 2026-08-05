@@ -2,6 +2,7 @@
 #include "command_handler.h"
 #include "esc_controller.h"
 #include "esc_protocol.h"
+#include "esc_dshot.h"
 
 #include <string.h>
 
@@ -21,10 +22,15 @@ static const char *TAG = "BT_SPP";
 #define SPP_SERVER_NAME "MotorTest_SPP"
 #define BT_DEVICE_NAME "MotorTest_ESP32"
 #define PACKET_SOF 0xAAU
+#define CMD_TELEMETRY 0x10U   // ESP → phone: raw telemetry packet
 
 #define BT_CMD_QUEUE_LEN 8
 #define BT_CMD_TASK_STACK 4096
 #define BT_CMD_TASK_PRIORITY 5
+
+#define BT_TELEM_TASK_STACK 4096
+#define BT_TELEM_TASK_PRIORITY 3
+#define BT_TELEM_PERIOD_MS 1000
 
 const char *BtRespond = "MotorTest_ESP32_is_connected\r\n";
 typedef enum
@@ -50,7 +56,7 @@ static bool client_connected = false;
 static QueueHandle_t command_queue = NULL;
 static TaskHandle_t command_task_handle = NULL;
 
-static void bluetooth_spp_send(const uint8_t *data, size_t length)
+static void spp_send(const uint8_t *data, size_t length)
 {
     if (!client_connected || data == NULL || length == 0)
         return;
@@ -60,6 +66,11 @@ static void bluetooth_spp_send(const uint8_t *data, size_t length)
     {
         ESP_LOGE(TAG, "SPP write failed: %s", esp_err_to_name(result));
     }
+}
+
+void bluetooth_spp_send(const uint8_t *data, size_t length)
+{
+    spp_send(data, length);
 }
 
 static void bt_command_task(void *arg)
@@ -174,6 +185,40 @@ static void spp_callback(esp_spp_cb_event_t event,
     }
 }
 
+static void bt_telemetry_task(void *arg)
+{
+    // Wait for BT connection before sending
+    while (true)
+    {
+        vTaskDelay(pdMS_TO_TICKS(BT_TELEM_PERIOD_MS));
+
+        if (!client_connected)
+            continue;
+
+        // Fetch raw (unscaled) telemetry from the ESC
+        esc_dshot_raw_telemetry_t raw;
+        esc_dshot_get_raw_telemetry(&raw);
+
+        // Packet: [SOF][CMD_TELEMETRY][eRPM_lo][eRPM_hi][temp][voltage][current][CRC]
+        // CRC = XOR of all bytes before CRC
+        uint8_t pkt[8];
+        pkt[0] = 0xAA;
+        pkt[1] = CMD_TELEMETRY;
+        pkt[2] = (uint8_t)(raw.erpm & 0xFF);        // eRPM low byte
+        pkt[3] = (uint8_t)((raw.erpm >> 8) & 0xFF);  // eRPM high byte
+        pkt[4] = raw.temperature;
+        pkt[5] = raw.voltage;
+        pkt[6] = raw.current;
+
+        uint8_t crc = 0;
+        for (int i = 0; i < 7; i++)
+            crc ^= pkt[i];
+        pkt[7] = crc;
+
+        spp_send(pkt, sizeof(pkt));
+    }
+}
+
 esp_err_t bluetooth_spp_init(void)
 {
     esp_err_t result;
@@ -207,6 +252,17 @@ esp_err_t bluetooth_spp_init(void)
     if (task_ok != pdPASS)
     {
         ESP_LOGE(TAG, "Failed to create command task");
+        return ESP_ERR_NO_MEM;
+    }
+
+    task_ok = xTaskCreate(
+        bt_telemetry_task, "bt_telem_task",
+        BT_TELEM_TASK_STACK, NULL,
+        BT_TELEM_TASK_PRIORITY, NULL);
+
+    if (task_ok != pdPASS)
+    {
+        ESP_LOGE(TAG, "Failed to create telemetry task");
         return ESP_ERR_NO_MEM;
     }
 

@@ -124,6 +124,8 @@ static uint32_t IRAM_ATTR duration_to_bit_len(uint32_t duration, uint32_t len)
     return (duration + (len >> 1)) / len;
 }
 
+static uint32_t convert_erpm_data_to_erpm_period(uint32_t value); // fwd decl, defined below
+
 static uint32_t IRAM_ATTR push_bits(uint32_t value, uint32_t bit_val, size_t bit_len)
 {
     while (bit_len--)
@@ -217,15 +219,20 @@ static bool IRAM_ATTR tx_done_cb(rmt_channel_handle_t ch,
 }
 
 /**
- * Converts the GCR value into eRPM data, and validates its CRC
+ * Converts the GCR value into a full EDT telemetry frame, validates its CRC
  * @param value 20-bit GCR value
- * @return uint32_t 12-bit eRPM data
+ * @return dshot_telemetry_t decoded type + scaled value
  */
-static uint32_t convert_gcr_to_erpm_data(uint32_t value)
+static dshot_telemetry_t convert_gcr_to_telemetry(uint32_t value)
 {
+    dshot_telemetry_t out = {
+        .type = DSHOT_TELEMETRY_TYPE_INVALID,
+        .value = INVALID_TELEMETRY_VALUE,
+    };
+
     if (!value)
     {
-        return INVALID_TELEMETRY_VALUE;
+        return out;
     }
 
     // ...shifting 5 bits -> 4 bits (0xff => invalid)
@@ -242,10 +249,64 @@ static uint32_t convert_gcr_to_erpm_data(uint32_t value)
 
     if ((csum & 0xf) != 0xf || decoded_value > 0xffff)
     {
-        return INVALID_TELEMETRY_VALUE;
+        return out;
     }
 
-    return decoded_value >> 4;
+    // 12-bit data field: "eeem mmmm mmmm"
+    uint16_t data = decoded_value >> 4;
+
+    // Prefix (3-bit exponent + mantissa MSB) tells eRPM from EDT frames
+    unsigned type = (data & 0x0f00) >> 8;
+    if ((type & 0x01) || (type == 0))
+    {
+        out.type = DSHOT_TELEMETRY_TYPE_eRPM;
+        out.value = convert_erpm_data_to_erpm_period(data);
+        out.raw = data;
+        return out;
+    }
+
+    uint8_t raw = data & 0x00ff;
+    switch (type)
+    {
+    case 0x02: // 0010 -> temperature, 1 LSB = 1 degC
+        out.type = DSHOT_TELEMETRY_TYPE_TEMPERATURE;
+        out.value = raw;
+        out.raw = raw;
+        break;
+    case 0x04: // 0100 -> voltage; AM32 sends battery_voltage/25 (1 LSB = 0.25 V,
+               // scaled to 0.01 V). Multiply by VOLTAGE_SCALE_PPM/1e6 to calibrate
+               // against the ESC's real voltage divider (see header).
+        out.type = DSHOT_TELEMETRY_TYPE_VOLTAGE;
+        out.value = (uint32_t)raw * 25 * VOLTAGE_SCALE_PPM / 1000000ULL;
+        out.raw = raw;
+        break;
+    case 0x06: // 0110 -> current; AM32 v2.20 sends actual_current/50 with
+               // actual_current in 0.01 A, so 1 LSB = 0.5 A (scaled to 0.01 A).
+        out.type = DSHOT_TELEMETRY_TYPE_CURRENT;
+        out.value = (uint32_t)raw * 50;
+        out.raw = raw;
+        break;
+    case 0x08:
+        out.type = DSHOT_TELEMETRY_TYPE_DEBUG1;
+        out.value = raw;
+        break;
+    case 0x0a:
+        out.type = DSHOT_TELEMETRY_TYPE_DEBUG2;
+        out.value = raw;
+        break;
+    case 0x0c:
+        out.type = DSHOT_TELEMETRY_TYPE_DEBUG3;
+        out.value = raw;
+        break;
+    case 0x0e: // 1110 -> state / events
+        out.type = DSHOT_TELEMETRY_TYPE_STATE_EVENTS;
+        out.value = raw;
+        break;
+    default:
+        break;
+    }
+
+    return out;
 }
 
 /**
@@ -426,10 +487,10 @@ esp_err_t dshot_rmt_deinit(void)
     return ESP_OK;
 }
 
-void dshot_rmt_send(uint16_t value, bool telemetry_req)
+bool dshot_rmt_send(uint16_t value, bool telemetry_req)
 {
     if (!enabled)
-        return;
+        return false;
 
     throttle.throttle = value;
     throttle.telemetry_req = telemetry_req;
@@ -437,37 +498,68 @@ void dshot_rmt_send(uint16_t value, bool telemetry_req)
 
     mode_tx();
 
-    ESP_ERROR_CHECK(rmt_transmit(rmt_tx_channel, dshot_encoder, &throttle, sizeof(throttle), &tx_config));
+    // Non-blocking transmit. With trans_queue_depth==1 this can return
+    // ESP_ERR_INVALID_STATE if the previous TX isn't complete yet (a rare,
+    // harmless race) - caller decides whether to treat it as a dropped frame.
+    return rmt_transmit(rmt_tx_channel, dshot_encoder, &throttle, sizeof(throttle), &tx_config) == ESP_OK;
 }
 
-esp_err_t dshot_rmt_wait_erpm(uint32_t *erpm)
+esp_err_t dshot_rmt_wait_telemetry(dshot_telemetry_t *out)
 {
-    *erpm = INVALID_TELEMETRY_VALUE;
+    out->type = DSHOT_TELEMETRY_TYPE_INVALID;
+    out->value = INVALID_TELEMETRY_VALUE;
 
     if (!enabled || !is_bidirectional)
         return ESP_ERR_INVALID_STATE;
 
     if (wait_for_flag(&telemetry_received, telemetry_timeout_us) == ESP_OK)
     {
-        uint32_t erpm_data = convert_gcr_to_erpm_data(telemetry_gcr);
-        *erpm = convert_erpm_data_to_erpm_period(erpm_data);
+        *out = convert_gcr_to_telemetry(telemetry_gcr);
         return ESP_OK;
     }
 
     return ESP_ERR_TIMEOUT;
 }
 
+esp_err_t dshot_rmt_wait_erpm(uint32_t *erpm)
+{
+    *erpm = INVALID_TELEMETRY_VALUE;
+
+    dshot_telemetry_t t;
+    if (dshot_rmt_wait_telemetry(&t) == ESP_OK && t.type == DSHOT_TELEMETRY_TYPE_eRPM)
+    {
+        *erpm = t.value;
+        return ESP_OK;
+    }
+
+    return ESP_ERR_TIMEOUT;
+}
+
+void dshot_rmt_get_telemetry(dshot_telemetry_t *out)
+{
+    out->type = DSHOT_TELEMETRY_TYPE_INVALID;
+    out->value = INVALID_TELEMETRY_VALUE;
+
+    if (!enabled || !is_bidirectional)
+        return;
+
+    *out = convert_gcr_to_telemetry(telemetry_gcr);
+}
+
 uint32_t dshot_rmt_get_erpm(void)
 {
-    if (!enabled || !is_bidirectional)
-        return INVALID_TELEMETRY_VALUE;
-
-    uint32_t erpm_data = convert_gcr_to_erpm_data(telemetry_gcr);
-    return convert_erpm_data_to_erpm_period(erpm_data);
+    dshot_telemetry_t t;
+    dshot_rmt_get_telemetry(&t);
+    return (t.type == DSHOT_TELEMETRY_TYPE_eRPM) ? t.value : INVALID_TELEMETRY_VALUE;
 }
 
 void dshot_rmt_reset_telemetry(void)
 {
     telemetry_received = false;
     telemetry_gcr = 0;
+}
+
+uint32_t dshot_rmt_get_raw_gcr(void)
+{
+    return telemetry_gcr;
 }

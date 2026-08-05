@@ -34,6 +34,12 @@ static void select_dshot(dshot_mode_t mode, bool bidir)
         pwm_active = false;
     }
 
+    // Hold the signal line LOW so the ESC (re)disarms and cleanly detects the
+    // new DShot signal BEFORE the throttle=0 arming stream starts. Without this
+    // the motor spools up for a moment when switching into DShot.
+    drive_signal_low();
+    vTaskDelay(pdMS_TO_TICKS(DSHOT_PROTOCOL_SWITCH_LOW_MS));
+
     ESP_ERROR_CHECK(esc_dshot_init(mode, bidir));
     esc_dshot_set_mode(mode);
     esc_dshot_start_stream();
@@ -52,12 +58,9 @@ void esc_protocol_select(esc_protocol_t protocol)
     if (is_dshot_protocol(previous_protocol) &&
         is_dshot_protocol(protocol))
     {
-        ESP_LOGI(TAG, "DShot switch: GPIO%d LOW for %u ms",
-                 ESC_PWM_GPIO, DSHOT_PROTOCOL_SWITCH_LOW_MS);
-
+        ESP_LOGI(TAG, "DShot switch: %d -> %d",
+                 previous_protocol, protocol);
         esc_dshot_deinit();
-        drive_signal_low();
-        vTaskDelay(pdMS_TO_TICKS(DSHOT_PROTOCOL_SWITCH_LOW_MS));
     }
     else if (previous_protocol != ESC_PROTOCOL_PWM)
     {
