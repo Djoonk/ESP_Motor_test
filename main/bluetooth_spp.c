@@ -30,7 +30,7 @@ static const char *TAG = "BT_SPP";
 
 #define BT_TELEM_TASK_STACK 4096
 #define BT_TELEM_TASK_PRIORITY 3
-#define BT_TELEM_PERIOD_MS 1000
+#define BT_TELEM_PERIOD_MS 500
 
 const char *BtRespond = "MotorTest_ESP32_is_connected\r\n";
 typedef enum

@@ -16,7 +16,8 @@ static bool pwm_active = false;
 static bool is_dshot_protocol(esc_protocol_t protocol)
 {
     return protocol == ESC_PROTOCOL_DSHOT300 ||
-           protocol == ESC_PROTOCOL_DSHOT600;
+           protocol == ESC_PROTOCOL_DSHOT600 ||
+           protocol == ESC_PROTOCOL_BIDIRECTIONAL_DSHOT;
 }
 
 static void drive_signal_low(void)
@@ -42,6 +43,7 @@ static void select_dshot(dshot_mode_t mode, bool bidir)
 
     ESP_ERROR_CHECK(esc_dshot_init(mode, bidir));
     esc_dshot_set_mode(mode);
+    esc_dshot_stop();           // ensure throttle=0 before arming stream starts
     esc_dshot_start_stream();
 }
 
@@ -73,12 +75,17 @@ void esc_protocol_select(esc_protocol_t protocol)
     {
     case ESC_PROTOCOL_PWM:
         ESP_LOGI(TAG, "Protocol = PWM");
-        esc_dshot_deinit();
-        if (!pwm_active)
+        if (pwm_active)
         {
-            esc_pwm_init();
-            pwm_active = true;
+            ESP_LOGI(TAG, "PWM already active, skipping init");
+            break;
         }
+        esc_dshot_stop_stream();
+        esc_dshot_deinit();
+        // Ensure GPIO is fully released from RMT before LEDC takes over
+        gpio_reset_pin(ESC_PWM_GPIO);
+        esc_pwm_init();
+        pwm_active = true;
         break;
 
     case ESC_PROTOCOL_DSHOT300:
@@ -117,7 +124,7 @@ void esc_protocol_set_throttle(uint16_t throttle)
     }
 
     // DSHOT300 / DSHOT600 / BIDIRECTIONAL_DSHOT - однакова формула
-    uint16_t value = 48 + ((2000 - 48) * throttle) / 100U;
+    uint16_t value = 47 + ((2000 - 47) * throttle) / 100U;
     esc_dshot_set_throttle(value);
 }
 
@@ -129,7 +136,5 @@ void esc_protocol_stop(void)
         return;
     }
 
-    // Раніше тут нічого не було для DSHOT300/600 - мотор
-    // не зупинявся ні по stop, ні по estop, ні по disarm.
     esc_dshot_stop();
 }

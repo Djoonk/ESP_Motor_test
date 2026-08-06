@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp_err.h"
 #include "driver/ledc.h"
 
@@ -11,7 +12,12 @@
 #define ESC_MIN_US          1000
 #define ESC_MAX_US          2000
 
+// AM32 requires minimum PWM signal for ~2s before accepting throttle
+#define ESC_PWM_ARM_MS      2000
+
 esp_err_t esc_pwm_init(void);
 void esc_pwm_set_pulse_us(uint16_t pulse_us);
 void esc_pwm_stop(void);
 esp_err_t esc_pwm_deinit(void);
+bool esc_pwm_is_armed(void);
+void esc_pwm_start_arm(void);

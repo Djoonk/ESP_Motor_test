@@ -19,7 +19,8 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "RMT sequence test start");
     ESP_ERROR_CHECK(esc_controller_init());
-    esc_protocol_select(ESC_PROTOCOL_PWM);  
+    // PWM вже ініціалізовано в esc_controller_init() → esc_protocol_init()
+    // Повторний виклик скидає GPIO через gpio_reset_pin()
 
     esp_err_t bt_result = bluetooth_spp_init();
 

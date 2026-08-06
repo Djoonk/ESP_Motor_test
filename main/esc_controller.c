@@ -48,6 +48,13 @@ void esc_controller_arm(void)
     }
 
     esc_protocol_stop();
+
+    // Start PWM arming sequence (hold min for ESC_PWM_ARM_MS)
+    if (esc_protocol_get() == ESC_PROTOCOL_PWM)
+    {
+        esc_pwm_start_arm();
+    }
+
     current_throttle_percent = 0;
     current_state = STAND_ARMED;
 
@@ -85,6 +92,13 @@ void esc_controller_set_throttle(uint16_t percent)
     {
         ESP_LOGW(TAG, "ESC is not armed");
         esc_protocol_stop();
+        return;
+    }
+
+    // For PWM: check if arming delay has elapsed
+    if (esc_protocol_get() == ESC_PROTOCOL_PWM && !esc_pwm_is_armed())
+    {
+        ESP_LOGW(TAG, "PWM still arming, ignoring throttle");
         return;
     }
 
