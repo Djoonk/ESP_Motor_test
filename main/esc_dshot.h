@@ -25,6 +25,7 @@ void esc_dshot_start_stream(void);
 void esc_dshot_stop_stream(void);
 void esc_dshot_set_throttle(uint16_t throttle);
 void esc_dshot_stop(void);
+void esc_dshot_rearm(void);
 void esc_dshot_send_command(uint16_t command, bool telemetry);
 void esc_dshot_enable_edt(void);
 bool esc_dshot_is_bidirectional(void);

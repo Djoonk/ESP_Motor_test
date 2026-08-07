@@ -3,6 +3,7 @@
 #include "esc_pwm.h"
 #include "esp_log.h"
 #include "esc_protocol.h"
+#include "esc_dshot.h"
 
 
 #define SAFE_MAX_THROTTLE_PERCENT 100 // обмеження газу
@@ -45,6 +46,13 @@ void esc_controller_arm(void)
     {
         ESP_LOGW(TAG, "Cannot arm: controller error");
         return;
+    }
+
+    // For DShot: the stream is already running from protocol selection.
+    // Re-arm the ESC so it accepts throttle and EDT is re-enabled.
+    if (esc_protocol_is_dshot())
+    {
+        esc_dshot_rearm();
     }
 
     esc_protocol_stop();

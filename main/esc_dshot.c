@@ -312,6 +312,21 @@ void esc_dshot_stop(void)
     portEXIT_CRITICAL(&throttle_mux);
 }
 
+void esc_dshot_rearm(void)
+{
+    portENTER_CRITICAL(&throttle_mux);
+    current_throttle = 0;
+    arming_frames_remaining = DSHOT_ARM_FRAMES;
+    portEXIT_CRITICAL(&throttle_mux);
+
+    edt_ack_logged = false;
+    edt_pending = false;
+    edt_cmds_sent = 0;
+
+    ESP_LOGI(TAG, "Re-arming: %u frames (%u ms)",
+             DSHOT_ARM_FRAMES, DSHOT_ARM_DELAY_MS);
+}
+
 void esc_dshot_send_command(uint16_t command, bool telemetry)
 {
     if (command > 47) return;

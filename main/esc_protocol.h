@@ -2,6 +2,7 @@
 #define ESC_PROTOCOL_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef enum
 {
@@ -16,5 +17,6 @@ void esc_protocol_select(esc_protocol_t protocol);
 esc_protocol_t esc_protocol_get(void);
 void esc_protocol_set_throttle(uint16_t throttle);
 void esc_protocol_stop(void);
+bool esc_protocol_is_dshot(void);
 
 #endif

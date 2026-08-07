@@ -43,8 +43,8 @@ static void select_dshot(dshot_mode_t mode, bool bidir)
 
     ESP_ERROR_CHECK(esc_dshot_init(mode, bidir));
     esc_dshot_set_mode(mode);
-    esc_dshot_stop();           // ensure throttle=0 before arming stream starts
-    esc_dshot_start_stream();
+    esc_dshot_stop();           // ensure throttle=0
+    esc_dshot_start_stream();   // DShot idle signal visible on GPIO immediately
 }
 
 void esc_protocol_init(void)
@@ -111,6 +111,11 @@ void esc_protocol_select(esc_protocol_t protocol)
 esc_protocol_t esc_protocol_get(void)
 {
     return currentProtocol;
+}
+
+bool esc_protocol_is_dshot(void)
+{
+    return is_dshot_protocol(currentProtocol);
 }
 
 void esc_protocol_set_throttle(uint16_t throttle)

@@ -5,7 +5,7 @@
 #include "esp_err.h"
 
 // DSHOT Timings (MichelJansson DShot-ESP32RMT)
-#define DSHOT_ARM_DELAY_MS       3200
+#define DSHOT_ARM_DELAY_MS       500
 
 // DShot protocol constants
 #define DSHOT_THROTTLE_MIN       48
