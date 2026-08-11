@@ -11,7 +11,9 @@ static esc_protocol_t currentProtocol = ESC_PROTOCOL_PWM;
 static const char *TAG = "ESC_PROTOCOL";
 static bool pwm_active = false;
 
-#define DSHOT_PROTOCOL_SWITCH_LOW_MS 300U
+// Signal LOW hold time between protocol changes. Keeps the ESC line at ~0
+// for half a second so the ESC cleanly disarms/detects the new signal.
+#define PROTOCOL_SWITCH_LOW_MS      500U
 
 static bool is_dshot_protocol(esc_protocol_t protocol)
 {
@@ -39,7 +41,7 @@ static void select_dshot(dshot_mode_t mode, bool bidir)
     // new DShot signal BEFORE the throttle=0 arming stream starts. Without this
     // the motor spools up for a moment when switching into DShot.
     drive_signal_low();
-    vTaskDelay(pdMS_TO_TICKS(DSHOT_PROTOCOL_SWITCH_LOW_MS));
+    vTaskDelay(pdMS_TO_TICKS(PROTOCOL_SWITCH_LOW_MS));
 
     ESP_ERROR_CHECK(esc_dshot_init(mode, bidir));
     esc_dshot_set_mode(mode);
@@ -84,6 +86,8 @@ void esc_protocol_select(esc_protocol_t protocol)
         esc_dshot_deinit();
         // Ensure GPIO is fully released from RMT before LEDC takes over
         gpio_reset_pin(ESC_PWM_GPIO);
+        drive_signal_low();
+        vTaskDelay(pdMS_TO_TICKS(PROTOCOL_SWITCH_LOW_MS));
         esc_pwm_init();
         pwm_active = true;
         break;

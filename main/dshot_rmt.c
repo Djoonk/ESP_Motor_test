@@ -12,6 +12,13 @@
 
 static const char *TAG = "DSHOT_RMT";
 
+// ── Debug scope pin (SSR-to-free GPIO5, tie a probe to it) ──
+// Turn on/off with dshot_rmt_debug_pin_init(). Toggling is IRAM-safe
+// so it works from the DShot RX ISR / busy-wait loop.
+#define DEBUG_PIN       5
+#define DEBUG_PIN_MASK  (1ULL << DEBUG_PIN)
+static volatile uint_fast8_t dbg_level = 0;
+
 // MichelJansson DShot-ESP32RMT: 40 MHz resolution for ESP32
 #define RMT_RESOLUTION_HZ 40000000U
 
@@ -27,6 +34,7 @@ static rmt_encoder_handle_t dshot_encoder = NULL;
 
 static rmt_receive_config_t rx_config;
 static rmt_transmit_config_t tx_config;
+
 static dshot_rmt_throttle_t throttle = {
     .throttle = 0,
     .telemetry_req = false,
@@ -35,13 +43,14 @@ static dshot_rmt_throttle_t throttle = {
 static bool enabled = false;
 static bool mode = false; // true = TX (push-pull), false = RX (open-drain)
 static bool is_bidirectional = false;
+static bool telemetry_received = false;
 
 static uint32_t dshot_bitrate_khz = 300;
 static uint16_t telemetry_bit_len_ticks; // one telemetry bit in RMT ticks
 static uint32_t telemetry_timeout_us;    // full bidir send+receive window
 static rmt_symbol_word_t rx_buf[MAX_BLOCKS];
 static uint32_t telemetry_gcr = 0;          // last received GCR frame
-static bool telemetry_received = false;
+
 
 // ── GCR decode: 5 bits -> 4 bits lookup table (0xFF = invalid) ──
 static const unsigned char GCR_DECODE_TABLE[32] DRAM_ATTR = {
@@ -563,3 +572,33 @@ uint32_t dshot_rmt_get_raw_gcr(void)
 {
     return telemetry_gcr;
 }
+
+// ---------- Debug scope helpers ---------- //
+void dshot_rmt_debug_pin_init(void)
+{
+    gpio_config_t io = {
+        .pin_bit_mask = DEBUG_PIN_MASK,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+    gpio_set_level(DEBUG_PIN, 0);
+    dbg_level = 0;
+}
+
+// Toggles DEBUG_PIN each call. IRAM-safe, can be called from ISR/busy-wait.
+void IRAM_ATTR dshot_rmt_debug_toggle(void)
+{
+    dbg_level ^= 1;
+    gpio_set_level(DEBUG_PIN, dbg_level);
+}
+
+// Sets DEBUG_PIN to a fixed level (0/1).
+void IRAM_ATTR dshot_rmt_debug_set(uint_fast8_t level)
+{
+    dbg_level = (uint_fast8_t)(level ? 1 : 0);
+    gpio_set_level(DEBUG_PIN, dbg_level);
+}
+// ---------- Debug scope helpers ---------- //

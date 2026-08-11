@@ -1,23 +1,30 @@
 #include "esc_dshot.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "dshot_rmt.h"
-#include "esp_timer.h"
+
+#define MOTOR_NVS_NAMESPACE "esc"
+#define MOTOR_NVS_KEY_POLES "pole_pairs"
+// Default 7 pole pairs (14 magnet). Change via BT command CMD_SET_MOTOR_POLES.
+#define MOTOR_POLE_PAIRS_DEFAULT 7
 
 static const char *TAG = "ESC_DSHOT";
 
-#define DSHOT_FRAME_PERIOD_US   2000U   // 500 Hz frame rate
-#define DSHOT_FRAME_RATE_HZ     500U
-#define DSHOT_TASK_STACK_SIZE   4096
-#define DSHOT_TASK_PRIORITY     8
+#define DSHOT_FRAME_PERIOD_US 2000U // 500 Hz frame rate
+#define DSHOT_FRAME_RATE_HZ 500U
+#define DSHOT_TASK_STACK_SIZE 4096
+#define DSHOT_TASK_PRIORITY 8
 
 // Arming: keep throttle at 0 for DSHOT_ARM_DELAY_MS after the stream starts.
 // Driven from the frame task so the BT handler is never blocked.
-#define DSHOT_ARM_FRAMES        ((uint32_t)(DSHOT_ARM_DELAY_MS * DSHOT_FRAME_RATE_HZ / 1000))
+#define DSHOT_ARM_FRAMES ((uint32_t)(DSHOT_ARM_DELAY_MS * DSHOT_FRAME_RATE_HZ / 1000))
 
 #define DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE 13
-#define EDT_ENABLE_REPEATS    8
+#define EDT_ENABLE_REPEATS 8
 // AM32 dshot.c: a command executes only after 6 CONSECUTIVE identical command
 // frames; ANY other frame (throttle 0 included) resets its command_count.
 // So cmd 13 must be sent back-to-back with no throttle frames in between.
@@ -34,17 +41,20 @@ static volatile uint16_t current_throttle = 0;
 static volatile uint32_t arming_frames_remaining = 0;
 
 // Last known EDT values (updated as the ESC cycles through frame types)
-static volatile uint32_t telem_erpm = INVALID_TELEMETRY_VALUE; // eRPM/100
-static volatile uint32_t telem_voltage = INVALID_TELEMETRY_VALUE; // 0.01 V
-static volatile uint32_t telem_current = INVALID_TELEMETRY_VALUE; // 0.01 A
+static volatile uint32_t telem_erpm = INVALID_TELEMETRY_VALUE;        // eRPM/100
+static volatile uint32_t telem_voltage = INVALID_TELEMETRY_VALUE;     // 0.01 V
+static volatile uint32_t telem_current = INVALID_TELEMETRY_VALUE;     // 0.01 A
 static volatile uint32_t telem_temperature = INVALID_TELEMETRY_VALUE; // degC
 static bool edt_ack_logged = false;
 
 // Raw (unscaled) values — phone applies the scale factors
 static volatile uint16_t telem_raw_erpm = 0;
-static volatile uint8_t  telem_raw_temp = 0;
-static volatile uint8_t  telem_raw_voltage = 0;
-static volatile uint8_t  telem_raw_current = 0;
+static volatile uint8_t telem_raw_temp = 0;
+static volatile uint8_t telem_raw_voltage = 0;
+static volatile uint8_t telem_raw_current = 0;
+
+// Mechanical conversion. telem_erpm is scaled so that value*100 = eRPM.
+static uint8_t motor_pole_pairs = MOTOR_POLE_PAIRS_DEFAULT;
 
 // EDT enable state: cmd 13 (with telemetry bit set) is interleaved into the
 // normal 500 Hz stream AFTER arming, while the motor is stopped (throttle 0).
@@ -162,15 +172,11 @@ static void dshot_frame_task(void *arg)
 
                 if (frame_count % 100 == 0)
                 {
-                    uint32_t erpm = telem_erpm;
-                    uint32_t volt = telem_voltage;
-                    uint32_t curr = telem_current;
-                    uint32_t temp = telem_temperature;
-                    ESP_LOGI(TAG, "T:%u eRPM(LSB=100):%lu  V:%lu.%02lu  A:%lu.%02lu  T:%luC",
-                             throttle, erpm,
-                             volt / 100, volt % 100,
-                             curr / 100, curr % 100,
-                             temp);
+ESP_LOGI(TAG, "T:%u eRPM(LSB=100):%lu  V:%lu.%02lu(raw=%u)  A:%lu.%02lu  T:%luC",
+                         throttle, telem_erpm,
+                         telem_voltage / 100, telem_voltage % 100, telem_raw_voltage,
+                         telem_current / 100, telem_current % 100,
+                         telem_temperature);
                 }
             }
             else if (arming_frames_remaining == 0 && frame_count % 500 == 0)
@@ -192,6 +198,19 @@ esp_err_t esc_dshot_init(dshot_mode_t mode, bool is_bidir)
 {
     currentMode = mode;
     bidir_active = is_bidir;
+
+    // Load persisted motor pole pairs (NVS must be initialized before call).
+    nvs_handle_t h;
+    if (nvs_open(MOTOR_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK)
+    {
+        uint8_t pp = 0;
+        if (nvs_get_u8(h, MOTOR_NVS_KEY_POLES, &pp) == ESP_OK && pp > 0)
+        {
+            motor_pole_pairs = pp;
+            ESP_LOGI(TAG, "Loaded motor pole pairs from NVS: %u", motor_pole_pairs);
+        }
+        nvs_close(h);
+    }
 
     dshot_rmt_set_bitrate(mode == DSHOT_MODE_600 ? 600U : 300U);
 
@@ -299,7 +318,8 @@ void esc_dshot_set_mode(dshot_mode_t mode)
 
 void esc_dshot_set_throttle(uint16_t throttle)
 {
-    if (throttle > 2047) throttle = 2047;
+    if (throttle > 2047)
+        throttle = 2047;
     portENTER_CRITICAL(&throttle_mux);
     current_throttle = throttle;
     portEXIT_CRITICAL(&throttle_mux);
@@ -329,7 +349,8 @@ void esc_dshot_rearm(void)
 
 void esc_dshot_send_command(uint16_t command, bool telemetry)
 {
-    if (command > 47) return;
+    if (command > 47)
+        return;
     dshot_rmt_send(command, telemetry);
 }
 
@@ -341,11 +362,46 @@ bool esc_dshot_is_bidirectional(void)
 void esc_dshot_get_raw_telemetry(esc_dshot_raw_telemetry_t *out)
 {
     portENTER_CRITICAL(&throttle_mux);
-    out->erpm        = telem_raw_erpm;
+    // Mechanical shaft RPM = eRPM / pole_pairs. telem_erpm has LSB = 100 eRPM.
+    if (telem_erpm != INVALID_TELEMETRY_VALUE && motor_pole_pairs)
+    {
+        // use 64-bit math to avoid overflow, round to nearest
+        out->erpm = (uint16_t)(((uint64_t)telem_erpm * 100 + motor_pole_pairs / 2)
+                               / motor_pole_pairs);
+    }
+    else
+    {
+        out->erpm = 0;
+    }
     out->temperature = telem_raw_temp;
-    out->voltage     = telem_raw_voltage;
-    out->current     = telem_raw_current;
+    // Apply voltage calibration (VOLTAGE_SCALE_PPM) so the phone's raw*0.25
+    // shows the true battery voltage.
+    uint32_t v_scaled = (uint32_t)telem_raw_voltage * VOLTAGE_SCALE_PPM / 1000000ULL;
+    out->voltage = (v_scaled > 0xFF) ? 0xFF : (uint8_t)v_scaled;
+    out->current = telem_raw_current;
     portEXIT_CRITICAL(&throttle_mux);
+}
+
+void esc_dshot_set_motor_pole_pairs(uint8_t pole_pairs)
+{
+    if (pole_pairs == 0)
+        return;
+
+    motor_pole_pairs = pole_pairs;
+    ESP_LOGI(TAG, "Motor pole pairs set to %u", motor_pole_pairs);
+
+    nvs_handle_t h;
+    if (nvs_open(MOTOR_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK)
+    {
+        nvs_set_u8(h, MOTOR_NVS_KEY_POLES, pole_pairs);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+uint8_t esc_dshot_get_motor_pole_pairs(void)
+{
+    return motor_pole_pairs;
 }
 
 static void dshot_timer_callback(void *arg)

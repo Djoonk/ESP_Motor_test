@@ -221,9 +221,9 @@ static void bt_telemetry_task(void *arg)
 
 esp_err_t bluetooth_spp_init(void)
 {
-    esp_err_t result;
-    result = nvs_flash_init();
-
+    // NVS is initialized in app_main() before the controllers, so only guard
+    // against the "no free pages" reset here (re-init is harmless if already done).
+    esp_err_t result = nvs_flash_init();
     if (result == ESP_ERR_NVS_NO_FREE_PAGES ||
         result == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {

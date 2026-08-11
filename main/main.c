@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "nvs_flash.h"
 
 #include "esc_controller.h"
 #include "bluetooth_spp.h"
@@ -17,6 +18,18 @@ static const char *TAG = "MAIN";
 
 void app_main(void)
 {
+    // NVS must be ready before esc_controller_init() so the motor config
+    // (pole pairs) can be loaded.
+    esp_err_t nvs = nvs_flash_init();
+    if (nvs == ESP_ERR_NVS_NO_FREE_PAGES ||
+        nvs == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs);
+
+    dshot_rmt_debug_pin_init();
     ESP_LOGI(TAG, "RMT sequence test start");
     ESP_ERROR_CHECK(esc_controller_init());
     // PWM вже ініціалізовано в esc_controller_init() → esc_protocol_init()

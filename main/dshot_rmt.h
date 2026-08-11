@@ -19,7 +19,7 @@
 // VOLTAGE_DIVIDER=110 instead of ~215 and reports ~half), compensate here in
 // parts-per-million: 1000000 = 1.0 (no change), 1954545 = ×1.954545.
 // Measure with a multimeter and set: PPM = (real_V / reported_V) * 1000000.
-#define VOLTAGE_SCALE_PPM        1000000
+#define VOLTAGE_SCALE_PPM        2173913 // ×2.1739: bottom-out raw=46 @ 25 V
 
 // Extended DShot Telemetry (EDT) - the 12-bit data field is shared between
 // eRPM frames and EDT frames. See https://github.com/bird-sanctuary/extended-dshot-telemetry
@@ -77,3 +77,8 @@ uint32_t dshot_rmt_get_raw_gcr(void);
 void dshot_rmt_set_bitrate(uint32_t bitrate_khz);
 
 void dshot_rmt_reset_telemetry(void);
+
+// ---------- Debug scope helpers ---------- //
+void dshot_rmt_debug_pin_init(void);
+void dshot_rmt_debug_toggle(void);
+void dshot_rmt_debug_set(uint_fast8_t level);

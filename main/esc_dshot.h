@@ -12,7 +12,7 @@ typedef enum
 } dshot_mode_t;
 
 typedef struct {
-    uint16_t erpm;          // raw 12-bit EDT value (phone decodes to eRPM)
+    uint16_t erpm;          // mechanical shaft RPM (1 LSB = 1 RPM)
     uint8_t  temperature;   // raw: 1 LSB = 1 °C
     uint8_t  voltage;       // raw: 1 LSB = 0.25 V
     uint8_t  current;       // raw: 1 LSB = 0.5 A
@@ -30,3 +30,8 @@ void esc_dshot_send_command(uint16_t command, bool telemetry);
 void esc_dshot_enable_edt(void);
 bool esc_dshot_is_bidirectional(void);
 void esc_dshot_get_raw_telemetry(esc_dshot_raw_telemetry_t *out);
+
+// Motor configuration. pole_pairs = number of magnetic poles / 2.
+// Used to convert eRPM -> mechanical shaft RPM. Persisted to NVS.
+void esc_dshot_set_motor_pole_pairs(uint8_t pole_pairs);
+uint8_t esc_dshot_get_motor_pole_pairs(void);

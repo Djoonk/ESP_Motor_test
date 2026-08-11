@@ -7,6 +7,7 @@
 #include "command_handler.h"
 #include "esc_protocol.h"
 #include "esc_controller.h"
+#include "esc_dshot.h"
 static const char *TAG = "ESP_COMMAND";
 
 static void command_select_protocol(esc_protocol_t protocol)
@@ -56,6 +57,12 @@ void command_handler_process(ESC_command_t command, uint8_t value)
 
     case CMD_RESET_ESTOP:
         esc_controller_reset_emergency_stop();
+        break;
+
+    case CMD_SET_MOTOR_POLES:
+        // value = number of pole pairs (poles/2), e.g. 14-pole motor -> 7.
+        // This converts reported eRPM to mechanical shaft RPM in telemetry.
+        esc_dshot_set_motor_pole_pairs(value);
         break;
 
     default:
