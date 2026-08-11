@@ -9,10 +9,12 @@ idf_component_register(
 	"esc_dshot.c" 
 	"dshot_rmt.c"
 	"dshot_rmt_encoder.c"
+	"esc_measurements.c"
     INCLUDE_DIRS "."
     REQUIRES 
         bt 
         nvs_flash
         esp_driver_ledc
-	esp_driver_rmt
+        esp_driver_rmt
+        esp_adc
 )
