@@ -99,3 +99,56 @@ esp_err_t esc_measurements_read_voltage(float *volts)
 
     return ESP_OK;
 }
+
+esp_err_t esc_measurements_read_current(float *amps)
+{
+    if (s_adc1 == NULL || amps == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int raw = 0;
+    int64_t acc = 0;
+    esp_err_t err = ESP_OK;
+
+    for (uint32_t i = 0; i < MEAS_CURRENT_SAMPLES; i++) {
+        err = adc_oneshot_read(s_adc1, MEAS_CURRENT_ADC_CH, &raw);
+        if (err != ESP_OK)
+            return err;
+        acc += raw;
+    }
+
+    float avg_raw = (float)acc / (float)MEAS_CURRENT_SAMPLES;
+    float pin_mv;
+
+    if (s_adc_cali != NULL) {
+        int cali_mv = 0;
+        err = adc_cali_raw_to_voltage(s_adc_cali, (int)avg_raw, &cali_mv);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "cali raw_to_voltage failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        pin_mv = (float)cali_mv;
+    } else {
+        pin_mv = avg_raw * (3300.0f / 4095.0f);
+    }
+
+    // ACHS-7125: V_out = Vzero + sensitivity * I.
+    // Thrust-test current is unidirectional: clamp negative to 0.
+    float i = (pin_mv - MEAS_CURRENT_ADC_OFFSET_MV - MEAS_VZERO_MV) / MEAS_SENS_MV_PER_A;
+    if (i < 0.0f)
+        i = 0.0f;
+
+    // EMA low-pass between telemetry reads to further smooth ADC noise.
+    static float s_filtered = 0.0f;
+    static bool s_first = true;
+    if (s_first) {
+        s_filtered = i;
+        s_first = false;
+    } else {
+        s_filtered = MEAS_EMA_ALPHA * i + (1.0f - MEAS_EMA_ALPHA) * s_filtered;
+    }
+
+    *amps = s_filtered;
+
+    return ESP_OK;
+}

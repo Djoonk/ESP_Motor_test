@@ -206,8 +206,13 @@ static void bt_telemetry_task(void *arg)
             raw.batt_voltage = (uint8_t)(batt_v * 10.0f);
         else
             raw.batt_voltage = 0;
-        // ADC battery current not wired yet (reserved, 1 LSB = 0.1 A)
-        raw.batt_current = 0;
+
+        // ADC battery current (1 LSB = 0.1 A)
+        float batt_a;
+        if (esc_measurements_read_current(&batt_a) == ESP_OK)
+            raw.batt_current = (uint8_t)(batt_a * 10.0f);
+        else
+            raw.batt_current = 0;
 
         // Thrust/weight sensor not wired yet (reserved, 1 LSB = 1 g)
         raw.thrust = 0;
