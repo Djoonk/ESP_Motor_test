@@ -14,8 +14,11 @@ typedef enum
 typedef struct {
     uint16_t erpm;          // mechanical shaft RPM (1 LSB = 1 RPM)
     uint8_t  temperature;   // raw: 1 LSB = 1 °C
-    uint8_t  voltage;       // raw: 1 LSB = 0.25 V
-    uint8_t  current;       // raw: 1 LSB = 0.5 A
+    uint8_t  voltage;       // raw EDT: 1 LSB = 0.25 V
+    uint8_t  current;       // raw EDT: 1 LSB = 0.5 A
+    uint8_t  batt_voltage;  // ADC battery voltage: 1 LSB = 0.1 V
+    uint8_t  batt_current;  // ADC battery current: 1 LSB = 0.1 A (reserved)
+    uint16_t thrust;        // thrust: 1 LSB = 1 g (reserved, HX711)
 } esc_dshot_raw_telemetry_t;
 
 esp_err_t esc_dshot_init(dshot_mode_t mode, bool is_bidir);

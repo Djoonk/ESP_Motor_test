@@ -13,11 +13,15 @@
 #include "esc_protocol.h"
 #include "dshot_rmt.h"
 #include "esc_pwm.h"
+#include "esc_measurements.h"
 
 static const char *TAG = "MAIN";
 
 void app_main(void)
 {
+    if(esc_measurements_init() != ESP_OK)
+        ESP_LOGI(TAG, "ADC init fail");
+        
     // NVS must be ready before esc_controller_init() so the motor config
     // (pole pairs) can be loaded.
     esp_err_t nvs = nvs_flash_init();

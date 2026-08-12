@@ -1,15 +1,17 @@
 #include "esc_measurements.h"
 #include "esp_log.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 
 static const char *TAG = "measurements";
 
 static adc_oneshot_unit_handle_t s_adc1 = NULL;
+static adc_cali_handle_t s_adc_cali = NULL;
 
 esp_err_t esc_measurements_init(void)
 {
-    if (s_adc1 != NULL) {
+    if (s_adc1 != NULL)
         return ESP_OK;
-    }
 
     adc_oneshot_unit_init_cfg_t init_cfg = {
         .unit_id = ADC_UNIT_1,
@@ -40,7 +42,60 @@ esp_err_t esc_measurements_init(void)
         return err;
     }
 
-    ESP_LOGI(TAG, "ADC initialized: current=GPIO%d, voltage=GPIO%d",
-             MEAS_CURRENT_ADC_CH, MEAS_VOLTAGE_ADC_CH);
+    // Calibration: line fitting uses factory eFuse values to correct
+    // the ADC gain/Vref non-linearity.
+    adc_cali_line_fitting_config_t cali_cfg = {
+        .unit_id = ADC_UNIT_1,
+        .atten = MEAS_ADC_ATTEN,
+        .bitwidth = MEAS_ADC_WIDTH_BITS,
+    };
+    err = adc_cali_create_scheme_line_fitting(&cali_cfg, &s_adc_cali);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ADC calibration unavailable, using linear map: %s",
+                 esp_err_to_name(err));
+        s_adc_cali = NULL;
+    }
+
+    ESP_LOGI(TAG, "ADC initialized: current=GPIO%d, voltage=GPIO%d, cali=%s",
+             MEAS_CURRENT_ADC_CH, MEAS_VOLTAGE_ADC_CH,
+             s_adc_cali != NULL ? "on" : "off");
+    return ESP_OK;
+}
+
+esp_err_t esc_measurements_read_voltage(float *volts)
+{
+    if (s_adc1 == NULL || volts == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int raw = 0;
+    int64_t acc = 0;
+    esp_err_t err = ESP_OK;
+
+    for (uint32_t i = 0; i < MEAS_SAMPLE_COUNT; i++) {
+        err = adc_oneshot_read(s_adc1, MEAS_VOLTAGE_ADC_CH, &raw);
+        if (err != ESP_OK)
+            return err;
+        acc += raw;
+    }
+
+    float avg_raw = (float)acc / (float)MEAS_SAMPLE_COUNT;
+    float pin_mv;
+
+    if (s_adc_cali != NULL) {
+        int cali_mv = 0;
+        err = adc_cali_raw_to_voltage(s_adc_cali, (int)avg_raw, &cali_mv);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "cali raw_to_voltage failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        pin_mv = (float)cali_mv;
+    } else {
+        pin_mv = avg_raw * (3300.0f / 4095.0f);
+    }
+
+    // Voltage at divider node -> battery voltage
+    *volts = pin_mv / 1000.0f / MEAS_DIVIDER_K - MEAS_VOLTAGE_OFFSET_V; // коєфіцієнт
+
     return ESP_OK;
 }

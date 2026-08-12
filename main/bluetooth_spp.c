@@ -3,6 +3,7 @@
 #include "esc_controller.h"
 #include "esc_protocol.h"
 #include "esc_dshot.h"
+#include "esc_measurements.h"
 
 #include <string.h>
 
@@ -199,9 +200,22 @@ static void bt_telemetry_task(void *arg)
         esc_dshot_raw_telemetry_t raw;
         esc_dshot_get_raw_telemetry(&raw);
 
-        // Packet: [SOF][CMD_TELEMETRY][eRPM_lo][eRPM_hi][temp][voltage][current][CRC]
+        // Independent ADC battery voltage (1 LSB = 0.1 V)
+        float batt_v;
+        if (esc_measurements_read_voltage(&batt_v) == ESP_OK)
+            raw.batt_voltage = (uint8_t)(batt_v * 10.0f);
+        else
+            raw.batt_voltage = 0;
+        // ADC battery current not wired yet (reserved, 1 LSB = 0.1 A)
+        raw.batt_current = 0;
+
+        // Thrust/weight sensor not wired yet (reserved, 1 LSB = 1 g)
+        raw.thrust = 0;
+
+        // Packet: [SOF][CMD_TELEMETRY][eRPM_lo][eRPM_hi][temp][voltage][current]
+        //        [batt_voltage][batt_current][weight_lo][weight_hi][CRC]
         // CRC = XOR of all bytes before CRC
-        uint8_t pkt[8];
+        uint8_t pkt[12];
         pkt[0] = 0xAA;
         pkt[1] = CMD_TELEMETRY;
         pkt[2] = (uint8_t)(raw.erpm & 0xFF);        // eRPM low byte
@@ -209,11 +223,15 @@ static void bt_telemetry_task(void *arg)
         pkt[4] = raw.temperature;
         pkt[5] = raw.voltage;
         pkt[6] = raw.current;
+        pkt[7] = raw.batt_voltage;
+        pkt[8] = raw.batt_current;
+        pkt[9] = (uint8_t)(raw.thrust & 0xFF);        // weight low byte
+        pkt[10] = (uint8_t)((raw.thrust >> 8) & 0xFF); // weight high byte
 
         uint8_t crc = 0;
-        for (int i = 0; i < 7; i++)
+        for (int i = 0; i < 11; i++)
             crc ^= pkt[i];
-        pkt[7] = crc;
+        pkt[11] = crc;
 
         spp_send(pkt, sizeof(pkt));
     }
