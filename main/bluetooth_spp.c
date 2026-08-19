@@ -4,6 +4,7 @@
 #include "esc_protocol.h"
 #include "esc_dshot.h"
 #include "esc_measurements.h"
+#include "thrust_task.h"
 
 #include <string.h>
 
@@ -23,7 +24,7 @@ static const char *TAG = "BT_SPP";
 #define SPP_SERVER_NAME "MotorTest_SPP"
 #define BT_DEVICE_NAME "MotorTest_ESP32"
 #define PACKET_SOF 0xAAU
-#define CMD_TELEMETRY 0x10U   // ESP → phone: raw telemetry packet
+#define CMD_TELEMETRY 0x10U // ESP → phone: raw telemetry packet
 
 #define BT_CMD_QUEUE_LEN 8
 #define BT_CMD_TASK_STACK 4096
@@ -31,7 +32,7 @@ static const char *TAG = "BT_SPP";
 
 #define BT_TELEM_TASK_STACK 4096
 #define BT_TELEM_TASK_PRIORITY 3
-#define BT_TELEM_PERIOD_MS 500
+#define BT_TELEM_PERIOD_MS 100
 
 const char *BtRespond = "MotorTest_ESP32_is_connected\r\n";
 typedef enum
@@ -90,7 +91,6 @@ static void bt_command_task(void *arg)
 
 static void protocol_rx_byte(uint8_t byte)
 {
-    // ESP_LOGW(TAG, "Parssing is OK");
     switch (rx_state)
     {
     case RX_WAIT_SOF:
@@ -149,13 +149,14 @@ static void spp_callback(esp_spp_cb_event_t event,
         client_connected = true;
 
         ESP_LOGI(TAG, "Bluetooth client connected");
-        bluetooth_spp_send((const uint8_t *)BtRespond, strlen(BtRespond));;
+        bluetooth_spp_send((const uint8_t *)BtRespond, strlen(BtRespond));
+        ;
 
         uint8_t packet[4] = {0xAA, CMD_PROTOCOL, esc_protocol_get(), 0x00};
         packet[3] = packet[0] ^ packet[1] ^ packet[2]; // CRC (XOR)
 
         bluetooth_spp_send(packet, sizeof(packet));
-        
+
         break;
 
     case ESP_SPP_CLOSE_EVT:
@@ -214,8 +215,9 @@ static void bt_telemetry_task(void *arg)
         else
             raw.batt_current = 0;
 
-        // Thrust/weight sensor not wired yet (reserved, 1 LSB = 1 g)
-        raw.thrust = 0;
+        // Thrust/weight sensor (HX711), 1 LSB = 1 g
+        float thrust_g = thrust_task_get_grams();
+        raw.thrust = (thrust_g > 0.0f) ? (uint16_t)(thrust_g + 0.5f) : 0;
 
         // Packet: [SOF][CMD_TELEMETRY][eRPM_lo][eRPM_hi][temp][voltage][current]
         //        [batt_voltage][batt_current][weight_lo][weight_hi][CRC]
@@ -224,13 +226,13 @@ static void bt_telemetry_task(void *arg)
         pkt[0] = 0xAA;
         pkt[1] = CMD_TELEMETRY;
         pkt[2] = (uint8_t)(raw.erpm & 0xFF);        // eRPM low byte
-        pkt[3] = (uint8_t)((raw.erpm >> 8) & 0xFF);  // eRPM high byte
+        pkt[3] = (uint8_t)((raw.erpm >> 8) & 0xFF); // eRPM high byte
         pkt[4] = raw.temperature;
         pkt[5] = raw.voltage;
         pkt[6] = raw.current;
         pkt[7] = raw.batt_voltage;
         pkt[8] = raw.batt_current;
-        pkt[9] = (uint8_t)(raw.thrust & 0xFF);        // weight low byte
+        pkt[9] = (uint8_t)(raw.thrust & 0xFF);         // weight low byte
         pkt[10] = (uint8_t)((raw.thrust >> 8) & 0xFF); // weight high byte
 
         uint8_t crc = 0;

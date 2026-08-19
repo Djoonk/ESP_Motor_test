@@ -4,17 +4,20 @@ idf_component_register(
         "esc_pwm.c"
         "esc_controller.c"
         "bluetooth_spp.c"
-	"command_handler.c"
-	"esc_protocol.c"
-	"esc_dshot.c" 
-	"dshot_rmt.c"
-	"dshot_rmt_encoder.c"
-	"esc_measurements.c"
+	    "command_handler.c"
+	    "esc_protocol.c"
+	    "esc_dshot.c" 
+	    "dshot_rmt.c"
+	    "dshot_rmt_encoder.c"
+	    "esc_measurements.c"
+	    "thrust_task.c"
+	    "HX711.c"
     INCLUDE_DIRS "."
     REQUIRES 
         bt 
         nvs_flash
         esp_driver_ledc
         esp_driver_rmt
+        esp_driver_gpio
         esp_adc
 )

@@ -8,6 +8,9 @@
 #include "esc_protocol.h"
 #include "esc_controller.h"
 #include "esc_dshot.h"
+#include "esc_measurements.h"
+#include "HX711.h"
+
 static const char *TAG = "ESP_COMMAND";
 
 static void command_select_protocol(esc_protocol_t protocol)
@@ -63,6 +66,13 @@ void command_handler_process(ESC_command_t command, uint8_t value)
         // value = number of pole pairs (poles/2), e.g. 14-pole motor -> 7.
         // This converts reported eRPM to mechanical shaft RPM in telemetry.
         esc_dshot_set_motor_pole_pairs(value);
+        break;
+
+    case CMD_TARE:
+        if (HX711_zero() == ESP_OK)
+            ESP_LOGI(TAG, "HX711 tare set");
+        else
+            ESP_LOGE(TAG, "HX711 tare failed");
         break;
 
     default:
