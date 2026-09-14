@@ -68,7 +68,7 @@ void command_handler_process(ESC_command_t command, uint8_t value)
         esc_dshot_set_motor_pole_pairs(value);
         break;
 
-    case CMD_TARE:
+    case CMD_SET_ZERO:
         if (HX711_zero() == ESP_OK)
             ESP_LOGI(TAG, "HX711 tare set");
         else

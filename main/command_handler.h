@@ -11,7 +11,7 @@ typedef enum {
     CMD_ESTOP           = 0x06,
     CMD_RESET_ESTOP     = 0x07,
     CMD_SET_MOTOR_POLES = 0x08,
-    CMD_TARE            = 0x09
+    CMD_SET_ZERO        = 0x09
 }ESC_command_t;
 
 

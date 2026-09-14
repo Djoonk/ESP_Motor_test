@@ -75,6 +75,7 @@ void bluetooth_spp_send(const uint8_t *data, size_t length)
     spp_send(data, length);
 }
 
+//сюди попадаємо після парсінгу команди по блютузу
 static void bt_command_task(void *arg)
 {
     bt_command_msg_t msg;

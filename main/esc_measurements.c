@@ -176,144 +176,144 @@ esp_err_t esc_measurements_read_current(float *amps)
 // HX711 (load cell) bit-bang driver
 // ============================================================================
 
-// static int32_t s_hx711_tare = 0;
-// static bool s_hx711_ready = false;
+static int32_t s_hx711_tare = 0;
+static bool s_hx711_ready = false;
 
-// esp_err_t hx711_init(void)
-// {
-//     if (s_hx711_ready)
-//         return ESP_OK;
+esp_err_t hx711_init(void)
+{
+    if (s_hx711_ready)
+        return ESP_OK;
 
-//     gpio_config_t sck_cfg = {
-//         .pin_bit_mask = (1ULL << HX711_SCK_GPIO),
-//         .mode = GPIO_MODE_OUTPUT,
-//         .pull_up_en = GPIO_PULLUP_DISABLE,
-//         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-//         .intr_type = GPIO_INTR_DISABLE,
-//     };
-//     esp_err_t err = gpio_config(&sck_cfg);
-//     if (err != ESP_OK) 
-//     {
-//         ESP_LOGE(TAG, "HX711 SCK config failed: %s", esp_err_to_name(err));
-//         return err;
-//     }
-//     gpio_set_level(HX711_SCK_GPIO, 0);
+    gpio_config_t sck_cfg = {
+        .pin_bit_mask = (1ULL << HX711_SCK_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&sck_cfg);
+    if (err != ESP_OK) 
+    {
+        ESP_LOGE(TAG, "HX711 SCK config failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    gpio_set_level(HX711_SCK_GPIO, 0);
 
-//     gpio_config_t dout_cfg = 
-//     {
-//         .pin_bit_mask = (1ULL << HX711_DOUT_GPIO),
-//         .mode = GPIO_MODE_INPUT,
-//         .pull_up_en = GPIO_PULLUP_DISABLE,
-//         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-//         .intr_type = GPIO_INTR_DISABLE,
-//     };
-//     err = gpio_config(&dout_cfg);
-//     if (err != ESP_OK) 
-//     {
-//         ESP_LOGE(TAG, "HX711 DOUT config failed: %s", esp_err_to_name(err));
-//         return err;
-//     }
+    gpio_config_t dout_cfg = 
+    {
+        .pin_bit_mask = (1ULL << HX711_DOUT_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    err = gpio_config(&dout_cfg);
+    if (err != ESP_OK) 
+    {
+        ESP_LOGE(TAG, "HX711 DOUT config failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
-//     s_hx711_ready = true;
-//     ESP_LOGI(TAG, "HX711 initialized: SCK=GPIO%d, DOUT=GPIO%d",
-//              HX711_SCK_GPIO, HX711_DOUT_GPIO);
-//     return ESP_OK;
-// }
+    s_hx711_ready = true;
+    ESP_LOGI(TAG, "HX711 initialized: SCK=GPIO%d, DOUT=GPIO%d",
+             HX711_SCK_GPIO, HX711_DOUT_GPIO);
+    return ESP_OK;
+}
 
-// esp_err_t hx711_read_raw(int32_t *raw)
-// {
-//     if (!s_hx711_ready)
-//         return ESP_ERR_INVALID_STATE;
+esp_err_t hx711_read_raw(int32_t *raw)
+{
+    if (!s_hx711_ready)
+        return ESP_ERR_INVALID_STATE;
 
-//     // Wait until DOUT goes LOW = data ready.
-//     uint32_t timeout = HX711_TIMEOUT_US;
-//     while (gpio_get_level(HX711_DOUT_GPIO) != 0) 
-//     {
-//         if (--timeout == 0)
-//             return ESP_ERR_TIMEOUT;
-//         esp_rom_delay_us(1);
-//     }
+    // Wait until DOUT goes LOW = data ready.
+    uint32_t timeout = HX711_TIMEOUT_US;
+    while (gpio_get_level(HX711_DOUT_GPIO) != 0) 
+    {
+        if (--timeout == 0)
+            return ESP_ERR_TIMEOUT;
+        esp_rom_delay_us(1);
+    }
 
-//     int32_t value = 0;
-//     for (int i = 0; i < 24; i++) 
-//     {
-//         gpio_set_level(HX711_SCK_GPIO, 1);
-//         value <<= 1;
-//         if (gpio_get_level(HX711_DOUT_GPIO))
-//             value |= 1;
-//         gpio_set_level(HX711_SCK_GPIO, 0);
-//     }
+    int32_t value = 0;
+    for (int i = 0; i < 24; i++) 
+    {
+        gpio_set_level(HX711_SCK_GPIO, 1);
+        value <<= 1;
+        if (gpio_get_level(HX711_DOUT_GPIO))
+            value |= 1;
+        gpio_set_level(HX711_SCK_GPIO, 0);
+    }
 
-//     // 25th pulse: channel A, gain 128 (also starts next conversion).
-//     gpio_set_level(HX711_SCK_GPIO, 1);
-//     gpio_set_level(HX711_SCK_GPIO, 0);
+    // 25th pulse: channel A, gain 128 (also starts next conversion).
+    gpio_set_level(HX711_SCK_GPIO, 1);
+    gpio_set_level(HX711_SCK_GPIO, 0);
 
-//     // Sign-extend 24-bit two's complement.
-//     if (value & 0x800000)
-//         value |= ~0xFFFFFF;
+    // Sign-extend 24-bit two's complement.
+    if (value & 0x800000)
+        value |= ~0xFFFFFF;
 
-//     *raw = value;
-//     return ESP_OK;
-// }
+    *raw = value;
+    return ESP_OK;
+}
 
-// esp_err_t hx711_read_raw_avg(int32_t *avg)
-// {
-//     // if (avg == NULL)
-//     //     return ESP_ERR_INVALID_STATE;
+esp_err_t hx711_read_raw_avg(int32_t *avg)
+{
+    // if (avg == NULL)
+    //     return ESP_ERR_INVALID_STATE;
 
-//     const int count = 16;
-//     int64_t sum = 0;
-//     int ok = 0;
-//     for (int i = 0; i < count; i++) 
-//     {
-//         int32_t v;
-//         if (hx711_read_raw(&v) == ESP_OK) 
-//         {
-//             sum += v;
-//             ok++;
-//         }
-//         esp_rom_delay_us(50); // settle between samples
-//     }
-//     if (ok == 0)
-//         return ESP_ERR_TIMEOUT;
+    const int count = 16;
+    int64_t sum = 0;
+    int ok = 0;
+    for (int i = 0; i < count; i++) 
+    {
+        int32_t v;
+        if (hx711_read_raw(&v) == ESP_OK) 
+        {
+            sum += v;
+            ok++;
+        }
+        esp_rom_delay_us(50); // settle between samples
+    }
+    if (ok == 0)
+        return ESP_ERR_TIMEOUT;
 
-//     *avg = (int32_t)(sum / ok);
-//     return ESP_OK;
-// }
+    *avg = (int32_t)(sum / ok);
+    return ESP_OK;
+}
 
-// esp_err_t hx711_tare(void)
-// {
-//     int32_t avg = 0;
-//     esp_err_t err = hx711_read_raw_avg(&avg);
-//     if (err != ESP_OK)
-//         return err;
+esp_err_t hx711_tare(void)
+{
+    int32_t avg = 0;
+    esp_err_t err = hx711_read_raw_avg(&avg);
+    if (err != ESP_OK)
+        return err;
 
-//     s_hx711_tare = avg;
-//     ESP_LOGI(TAG, "HX711 tare set: %ld", (long)s_hx711_tare);
-//     return ESP_OK;
-// }
+    s_hx711_tare = avg;
+    ESP_LOGI(TAG, "HX711 tare set: %ld", (long)s_hx711_tare);
+    return ESP_OK;
+}
 
-// esp_err_t hx711_read_grams(float *grams)
-// {
-//     if (grams == NULL)
-//         return ESP_ERR_INVALID_STATE;
+esp_err_t hx711_read_grams(float *grams)
+{
+    if (grams == NULL)
+        return ESP_ERR_INVALID_STATE;
 
-//     int32_t avg = 0;
-//     esp_err_t err = hx711_read_raw_avg(&avg);
-//     if (err != ESP_OK)
-//         return err;
+    int32_t avg = 0;
+    esp_err_t err = hx711_read_raw_avg(&avg);
+    if (err != ESP_OK)
+        return err;
 
-//     if (HX711_SCALE_COUNTS_PER_G <= 0.0f) 
-//     {
-//         // Not calibrated yet: show raw counts so the user can compute
-//         // HX711_SCALE_COUNTS_PER_G = (raw_with_load - raw_tare) / weight_g.
-//         ESP_LOGI(TAG, "HX711 raw_avg=%ld tare=%ld (uncalibrated)",
-//                  (long)avg, (long)s_hx711_tare);
-//         *grams = 0.0f;
-//         return ESP_OK;
-//     }
+    if (HX711_SCALE_COUNTS_PER_G <= 0.0f) 
+    {
+        // Not calibrated yet: show raw counts so the user can compute
+        // HX711_SCALE_COUNTS_PER_G = (raw_with_load - raw_tare) / weight_g.
+        ESP_LOGI(TAG, "HX711 raw_avg=%ld tare=%ld (uncalibrated)",
+                 (long)avg, (long)s_hx711_tare);
+        *grams = 0.0f;
+        return ESP_OK;
+    }
 
-//     *grams = (float)(avg - s_hx711_tare) / HX711_SCALE_COUNTS_PER_G;
-//     ESP_LOGI(TAG, "HX711 thrust=%.1f g (raw_avg=%ld)", *grams, (long)avg);
-//     return ESP_OK;
-// }
+    *grams = (float)(avg - s_hx711_tare) / HX711_SCALE_COUNTS_PER_G;
+    ESP_LOGI(TAG, "HX711 thrust=%.1f g (raw_avg=%ld)", *grams, (long)avg);
+    return ESP_OK;
+}
